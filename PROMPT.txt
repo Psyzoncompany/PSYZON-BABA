@@ -1,0 +1,752 @@
+# Prompt para recriar o Baba Psyzon em Next.js
+
+Copie todo o conteúdo abaixo e envie ao Codex no repositório em que o novo aplicativo será construído.
+
+---
+
+Você é um engenheiro de software full-stack sênior, arquiteto de Next.js e product designer especializado em aplicativos web mobile-first. Sua tarefa é reconstruir do zero o sistema **Baba Psyzon** como um aplicativo web moderno, online, rápido, seguro, instalável e extremamente simples para pessoas leigas.
+
+Não entregue apenas uma landing page, um protótipo ou telas estáticas. Implemente o produto funcional de ponta a ponta, com banco de dados, autenticação, autorização, sincronização em tempo real, regras de negócio, estados de carregamento/erro/vazio, testes e preparação para produção.
+
+## 1. Objetivo do produto
+
+Criar uma nova versão do Baba Psyzon usando Next.js, com experiência visual de aplicativo nativo no Android e no iOS, mas acessível por URL e publicável na internet. O sistema organiza um “baba” de futebol/futsal: cadastro e presença de jogadores, sorteio e edição de times, controle das partidas ao vivo, rodízio, tabela, rankings, estrelas de desempenho, pagamentos mensais, metas de compra, histórico, relatórios PDF, importação inteligente de resultados e mesa tática.
+
+A interface deve ser:
+
+- mobile-first e confortável para uso com uma mão;
+- minimalista, direta e escrita em português do Brasil;
+- compreensível por alguém sem conhecimento técnico;
+- rápida mesmo em celulares intermediários e conexões instáveis;
+- responsiva também em tablet e desktop;
+- acessível, com contraste AA, foco visível, sem depender apenas de cor e com alvos de toque de no mínimo 44 × 44 px;
+- instalável como PWA, com modo standalone, ícones, manifesto, safe areas e aparência correta no Android e no iOS.
+
+Preserve as regras funcionais descritas abaixo, mas não copie a estrutura, o CSS ou a arquitetura do sistema legado. A nova implementação deve ser limpa, modular, tipada, testável e segura.
+
+## 2. Fonte de verdade do sistema atual
+
+Se o repositório legado estiver disponível, leia os arquivos abaixo antes de programar e use-os como fonte de verdade para casos de borda:
+
+- `public/baba.html`
+- `public/baba.js`
+- `public/baba-management-core.js`
+- `public/baba-performance-stars.js`
+- `public/baba-persistence.js`
+- `public/baba-access.js`
+- `public/baba-import-core.js`
+- `public/baba-import-ui.js`
+- `public/baba-import-persistence.js`
+- `public/pdf-report.js`
+- `public/mesa-tatica.html`
+- `public/mesa-tatica.js`
+- `public/mesa-tatica-storage.js`
+- `public/mesa-tatica-export.js`
+- `public/baba-aparencia.html`
+- `firestore.rules`, `firestore.indexes.json` e `storage.rules`
+- testes em `public/tests/` e `tests/`
+
+Não edite arquivos dentro de `.next`; eles são artefatos de build. Não remova nem sobrescreva o sistema legado antes de existir uma estratégia verificável de migração e rollback. Se os arquivos legados não estiverem disponíveis, use esta especificação como fonte de verdade.
+
+## 3. Forma de trabalho obrigatória
+
+1. Primeiro faça um inventário curto do repositório e crie um plano por fases.
+2. Defina o modelo de dados, as permissões e as funções puras das regras de negócio antes das telas complexas.
+3. Implemente verticalmente: uma funcionalidade deve terminar com UI, persistência, autorização e testes.
+4. Não pare para pedir confirmação em decisões técnicas comuns. Tome decisões razoáveis, documente-as e continue. Pergunte apenas quando uma escolha puder alterar uma regra de negócio essencial ou causar perda de dados.
+5. Não simule recursos com arrays temporários, dados mockados ou botões sem ação na versão final.
+6. Ao terminar cada fase, execute lint, checagem de tipos e testes relevantes.
+7. Antes da entrega, teste os fluxos completos no tamanho de tela de Android e iPhone e também no desktop.
+8. Mantenha um arquivo `IMPLEMENTATION_STATUS.md` com o que foi concluído, decisões importantes, migrações e pendências reais.
+
+## 4. Arquitetura técnica esperada
+
+Use:
+
+- Next.js com App Router e a versão estável disponível no projeto;
+- TypeScript em modo estrito;
+- Server Components como padrão e Client Components somente onde houver interação, APIs do navegador ou tempo real;
+- Server Actions para mutações originadas pela interface quando forem adequadas;
+- Route Handlers para autenticação por código, importação, PDF, compartilhamento, integrações e endpoints que precisem de HTTP;
+- validação de todos os payloads no servidor com Zod ou equivalente;
+- Firebase Authentication, Firestore e Storage já existentes, caso o projeto legado esteja disponível, evitando criar um segundo banco paralelo;
+- Firebase Admin somente no servidor; nenhum segredo pode ir para o bundle do cliente;
+- `next/image` para imagens, `next/font` para tipografia e metadados completos;
+- componentes acessíveis baseados em primitives confiáveis, como Radix/shadcn, sem transformar o aplicativo em uma colagem de componentes genéricos;
+- ícones Lucide ou equivalentes. Não use emojis como ícones de interface;
+- valores monetários armazenados em centavos inteiros na nova camada de domínio, com conversão explícita para dados legados;
+- datas persistidas de modo consistente e exibidas em `pt-BR`, considerando o fuso `America/Bahia`.
+
+Organize o código aproximadamente em:
+
+- `app/`: rotas, layouts, loading, error e páginas;
+- `components/`: componentes compartilhados e componentes por domínio;
+- `features/`: acesso, jogadores, baba, sorteio, partidas, ranking, pagamentos, metas, histórico, importação, PDF e mesa tática;
+- `lib/domain/`: regras puras e determinísticas;
+- `lib/firebase/`: clientes browser/admin e repositórios;
+- `lib/auth/`: sessão e autorização;
+- `lib/validation/`: schemas de entrada;
+- `lib/pdf/`: modelos e renderização dos relatórios;
+- `tests/`: testes unitários, integração e end-to-end.
+
+Não prenda regras de pontuação, sorteio, rodízio ou estrelas a componentes React. Elas devem existir como funções puras, com testes próprios.
+
+## 5. Rotas e navegação
+
+Crie uma arquitetura de informação simples. Uma sugestão de rotas é:
+
+- `/`: escolha de acesso;
+- `/app/ao-vivo`;
+- `/app/times`;
+- `/app/tabela`;
+- `/app/ranking`;
+- `/app/historico`;
+- `/app/metas`;
+- `/organizador`;
+- `/aparencia`;
+- `/mesa-tatica`.
+
+No celular, use navegação inferior fixa respeitando `env(safe-area-inset-bottom)`, com no máximo cinco destinos principais: **Ao vivo**, **Times**, **Tabela**, **Ranking** e **Mais**. Coloque Histórico, Metas, Aparência, Mesa Tática, Trocar acesso e Sair dentro de “Mais”. Quando o usuário for organizador, mostre um acesso claro ao painel Organizador sem esconder ações essenciais. No desktop, converta isso em sidebar ou navegação lateral compacta, sem cobrir o cabeçalho nem o conteúdo.
+
+Restaure a última área visitada por conta e por dispositivo, mas nunca permita que isso burle a autorização.
+
+## 6. Papéis, autenticação e segurança
+
+Existem dois papéis principais.
+
+### Organizador
+
+- Tem permissão de leitura e escrita sobre a própria conta do baba.
+- Entra com Google e pode ter um acesso de comissão por e-mail e senha vinculado ao mesmo espaço de dados.
+- Pode cadastrar e alterar jogadores, presenças, pagamentos, times, partidas, histórico, aparência, metas e importações.
+- Pode gerar, copiar e rotacionar o código dos jogadores.
+
+### Jogador/visualizador
+
+- Entra com um código numérico de quatro dígitos fornecido pelo organizador.
+- Pode optar por lembrar o acesso no dispositivo.
+- Tem acesso somente de leitura à conta correta.
+- Nunca vê botões administrativos ou recebe permissão de escrita apenas por esconder a UI.
+
+Preserve a experiência simples de código de quatro dígitos, mas corrija a segurança do legado:
+
+- verifique o código no servidor;
+- aplique rate limiting por IP/dispositivo e atraso progressivo contra tentativa de força bruta;
+- nunca armazene o código em texto puro no banco;
+- use hash com segredo do servidor/HMAC ou mecanismo equivalente;
+- ao validar, emita uma sessão `HttpOnly`, `Secure`, `SameSite=Lax`, limitada ao `accountId` e ao papel `viewer`;
+- permita revogação/rotação do código e invalide sessões quando apropriado;
+- não exponha uma coleção pública que permita testar offline todos os 10 mil códigos;
+- isole todas as contas no formato `baba_accounts/{accountId}` ou em modelo equivalente multi-tenant;
+- valide autorização no servidor e também nas regras do Firestore;
+- não confie em `accountId`, `role`, preço, placar ou totais enviados pelo cliente.
+
+Use soft delete para entidades com histórico. Registre auditoria em operações críticas e nunca apague silenciosamente estatísticas históricas.
+
+## 7. Tela de acesso
+
+A primeira tela deve apresentar três escolhas grandes e autoexplicativas:
+
+1. **Entrar como organizador** — Google ou acesso da comissão por e-mail/senha.
+2. **Entrar como jogador** — campo de quatro dígitos, opção “Lembrar neste dispositivo” e mensagens claras de código inválido/revogado.
+3. **Mesa Tática** — acesso direto à prancheta.
+
+Inclua trocar acesso, sair, restauração segura de sessão e feedback de carregamento. Use modal ou sheet acessível, com foco preso, fechamento por Escape e devolução do foco ao elemento que abriu.
+
+## 8. Painel do organizador
+
+O painel deve funcionar como um fluxo guiado e mostrar apenas a próxima ação relevante. Ele deve conter:
+
+- iniciar um novo baba com a data de hoje;
+- editar a data antes de finalizar;
+- marcar jogadores presentes;
+- escolher o modo de anotação;
+- sortear os times;
+- iniciar o primeiro/próximo jogo no modo online;
+- desfazer o último jogo;
+- finalizar o baba;
+- resetar somente o baba atual, preservando históricos finalizados;
+- mostrar o estado atual: nenhum baba, aberto, times sorteados, jogo preparado, jogando, desempate pendente ou finalizado;
+- administrar o código dos jogadores;
+- criar/alterar o acesso da comissão;
+- cadastrar e gerenciar jogadores e pagamentos;
+- importar um baba antigo por relatório.
+
+Use um stepper curto: **Presenças → Modo → Sorteio → Partidas/Estatísticas → Finalizar**. Nunca apresente ao leigo dez botões igualmente destacados. Deve haver uma ação primária por estado e ações perigosas separadas visualmente.
+
+## 9. Cadastro e estados dos jogadores
+
+Cada jogador fixo possui:
+
+- id;
+- nome;
+- tipo: jogador de linha ou goleiro;
+- status: regular, novato, convidado ou desativado;
+- ativo/inativo;
+- datas e metadados de auditoria.
+
+Regras:
+
+- **Regular:** participa da cobrança e aparece nos rankings.
+- **Novato:** não é cobrado; aparece em lista separada; só deixa de ser novato quando o organizador altera manualmente o status.
+- **Convidado/visitante:** vale apenas para o baba atual, não entra na cobrança mensal e não aparece nos rankings gerais.
+- **Desativado:** não entra em presença, cobrança ou rankings novos, mas o histórico antigo deve continuar íntegro.
+- Excluir/desativar um jogador nunca pode corromper partidas antigas; preserve snapshots de nome e elenco.
+- Permita pesquisar e filtrar por nome, pagamento, novato e status.
+
+O cadastro rápido deve pedir somente nome e tipo. Configurações menos frequentes ficam em um menu de ações.
+
+## 10. Presença e jogadores que chegam depois
+
+- Mostre apenas jogadores ativos na lista principal de presença.
+- Permita marcar/desmarcar com um toque e mostre a quantidade selecionada.
+- Ordene de forma útil e mostre discretamente tipo e situação de pagamento.
+- Ao marcar presença, crie o estado de pagamento do evento/mês se necessário.
+- Se ainda não houve sorteio, mudar a presença pode reiniciar somente o estado transitório dos times/jogos.
+- Depois do sorteio, desmarcar alguém remove essa pessoa dos times futuros sem alterar elencos congelados de jogos já iniciados.
+- Pessoas que chegam depois ficam como “presentes sem time”. O organizador pode sortear somente essas pessoas em um novo lote.
+- O novo lote cria novos times sequenciais, não duplica ninguém, registra `drawBatch`, marca `lateArrival` e entra no fim da fila.
+
+## 11. Dois modos de anotação
+
+O modo deve ser escolhido antes do primeiro sorteio e fica bloqueado depois que existem times ou partidas.
+
+### Modo Pelo Site (online/automático)
+
+- Controla partidas individuais, cronômetro, placar, autores dos gols, fila e rodízio.
+- Atualiza tabela, rankings, artilheiros e histórico automaticamente.
+
+### Modo Manual (papel/PDF)
+
+- Após o sorteio, permita baixar/imprimir uma ficha PDF limpa com data, times, elencos e campos para anotar resultados e gols no papel.
+- Na volta ao aplicativo, o organizador informa por time: vitórias, empates, derrotas e gols de cada jogador usando steppers `− / +` e campos numéricos acessíveis.
+- Não existem cronômetro, partidas individuais, fila ou histórico de confrontos nesse modo.
+- Pontos do time = vitórias × 3 + empates.
+- Gols pró = soma dos gols individuais. O modo manual não precisa calcular gols contra nem saldo; esconda campos que não façam sentido.
+- Tabela, campeão, ranking diário/mensal/geral e estrelas devem ser derivados dos totais manuais.
+- As correções feitas depois da finalização precisam recalcular agregados sem duplicar estatísticas.
+
+## 12. Sorteio dos times
+
+Implemente o sorteio como função pura, com fonte aleatória segura quando disponível e testes determinísticos por injeção de RNG.
+
+Regras exatas:
+
+- São necessários pelo menos dois presentes e, para o primeiro sorteio, no mínimo oito jogadores de linha.
+- Cada time recebe como referência quatro jogadores de linha.
+- Quantidade inicial de times = `ceil(jogadoresDeLinha / 4)`, limitada a no mínimo 2 e no máximo 5.
+- Embaralhe jogadores de linha e goleiros separadamente.
+- Distribua os jogadores de linha sem repetição. Complete os primeiros blocos de quatro e distribua excedentes sem duplicar ids.
+- Distribua goleiros em ordem de times também embaralhada e de forma circular, equilibrando-os o máximo possível.
+- Nenhum nome específico pode influenciar time ou posição.
+- Visitantes, quando existirem, formam um time “Visitante” separado.
+- O primeiro jogo deve ser Time 1 × Time 2.
+- Guarde ordem de sorteio, lote, horário e elenco.
+
+Experiência do sorteio:
+
+- mostre antes um resumo de presentes, times estimados e goleiros;
+- tenha animação de revelação progressiva por time e jogador;
+- permita ativar/desativar som e pular a animação;
+- ofereça “Rever sorteio” sem gerar outro resultado;
+- exiba o progresso e anuncie mudanças por `aria-live` sem excesso;
+- depois do sorteio, permita mover/adicionar/retirar jogadores, desde que jogos já encerrados mantenham o elenco congelado;
+- permita retirar um time do rodízio preservando dados, devolver ao fim da fila ou excluir o time e seus dados do baba atual mediante confirmação;
+- exporte times e jogadores em TXT e na ficha PDF manual.
+
+## 13. Partida ao vivo e rodízio
+
+Cada partida online deve ter:
+
+- número sequencial;
+- Time A e Time B;
+- snapshot dos elencos dos dois times;
+- placar;
+- eventos de gol;
+- status preparado, em andamento, pausado ou finalizado;
+- duração padrão de 8 minutos;
+- tempo restante, início, pausa, retomada e edição do tempo;
+- horário de início e finalização.
+
+Fluxo:
+
+- Ao preparar uma partida, não inicie o cronômetro sem ação explícita.
+- Durante o jogo, o organizador marca gol tocando no time e depois no jogador.
+- Mostre goleiros primeiro no seletor de autor do gol.
+- Permita “Sem artilheiro/jogador de fora”; esse gol altera o placar, mas não o ranking individual.
+- Registre o minuto com base no tempo decorrido.
+- Permita desfazer somente o último gol, com confirmação clara.
+- Toque som discreto no gol e no fim, respeitando preferências de movimento/som.
+- Use Wake Lock quando suportado enquanto o organizador estiver controlando a partida, liberando-o ao sair/ocultar.
+- Ao finalizar, confirme, salve o jogo, atualize estatísticas, mostre quem fica/sai e apenas prepare a próxima partida.
+- Mantenha até dez snapshots para “Desfazer último jogo”.
+
+Rodízio:
+
+- Vitória: vencedor permanece em quadra; perdedor vai para o fim da fila; o próximo entra.
+- Empate com somente dois times ativos: escolha aleatoriamente quem fica e quem sai.
+- Empate com três times ativos: abra um desempate manual de ímpar/par; o organizador toca no time vencedor, ele permanece e o terceiro time entra.
+- Empate com quatro ou mais times ativos: os dois times do empate saem e vão para o fim da fila; os dois próximos entram.
+- A fila deve poder ser reordenada pelo organizador por drag-and-drop e por botões acessíveis “Próximo” e “Fim”.
+- Nunca permita que o mesmo time esteja ao mesmo tempo em quadra e na fila.
+
+Permita editar ou excluir um jogo finalizado. Ao alterar o placar, exija exatamente um autor para cada gol, aceitando “Sem artilheiro”. Recalcule resultado, tabela, campeão, ranking diário, mensal e geral de forma transacional e idempotente.
+
+## 14. Tabela dos times
+
+Mostre posição, time, pontos, gols pró, saldo, vitórias, empates e derrotas. No modo manual, oculte saldo/gols contra quando não houver dados.
+
+Regras:
+
+- vitória = 3 pontos;
+- empate = 1 ponto;
+- derrota = 0;
+- durante uma partida, mostre uma prévia da tabela incluindo o placar ao vivo sem persistir os pontos antes do encerramento;
+- ordene a tabela por pontos, saldo, gols pró e nome;
+- destaque de forma sóbria o líder e identifique o time em jogo;
+- inclua Top 4 de artilheiros do baba atual;
+- a versão mobile deve virar uma tabela compacta legível ou cards alinhados, sem exigir zoom da página.
+
+Campeão ao finalizar o baba:
+
+1. maior número de pontos;
+2. maior número de vitórias;
+3. maior saldo de gols;
+4. maior número de gols pró.
+
+Se todos esses critérios empatarem, aceite mais de um time campeão e atribua o título aos jogadores de todos eles.
+
+## 15. Rankings e estatísticas
+
+Crie os seguintes escopos:
+
+- ranking do mês, considerando babas finalizados;
+- ranking geral, considerando babas finalizados;
+- ranking do dia/baba atual;
+- ranking de goleiros;
+- histórico mensal com seletor de mês.
+
+Permita ordenar por:
+
+- melhores/estrelas;
+- gols;
+- vitórias;
+- derrotas;
+- pior jogador;
+- títulos;
+- aproveitamento.
+
+Estatísticas individuais:
+
+- gols, vitórias, empates, derrotas, total de jogos, total de babas, títulos, média de gols e aproveitamento;
+- `aproveitamento = pontos obtidos / (jogos × 3) × 100`;
+- `média de gols = gols / babas`;
+- convidados e desativados não aparecem em rankings gerais;
+- o ranking “pior jogador” prioriza mais derrotas e, no empate, menos gols;
+- o ranking de goleiros prioriza menos derrotas, depois mais vitórias, mais empates, menos gols sofridos, menor média sofrida, mais jogos e nome.
+
+Não calcule agregados de maneira diferente em cada tela. Crie um único motor de domínio usado pela UI, PDFs, histórico e assistente.
+
+## 16. Sistema de estrelas de desempenho
+
+Implemente exatamente um motor compartilhado para cards, rankings e PDF.
+
+Níveis:
+
+- 0: Sem estrela;
+- 1: Iniciante, cinza;
+- 2: Promessa, bronze;
+- 3: Destaque, prata;
+- 4: Craque, ouro;
+- 5: Lenda do Baba, diamante.
+
+Pontuação do jogador de linha:
+
+`score = vitórias × 6 + empates × 2 + gols × 3 + MVPs × 5 − amarelos − vermelhos × 3`
+
+Se MVP e cartões ainda não tiverem interface, mantenha os campos tipados e use zero até existir dado real; nunca invente valores.
+
+Pontuação de goleiro:
+
+`score = vitórias × 6 + empates × 2 + jogos sem derrota × 2`
+
+Derrotas não dão pontos. `jogos sem derrota = jogos − derrotas`.
+
+Regras adaptativas:
+
+- Compare o score ajustado com a média do grupo elegível.
+- Enquanto houver menos de 10 babas concluídos, use 70% do score do jogador + 30% da média do grupo.
+- Com 10 ou mais babas, use o score bruto.
+- Jogos mínimos antes de receber estrelas: antes de 10 babas, `ceil(babasConcluídos / 2)`, limitado entre 1 e 5; a partir de 10 babas, mínimo de 10 jogos.
+- Faixas da razão jogador/média: abaixo de 0,8 = 0; de 0,8 a menos de 1 = 1; de 1 a menos de 1,25 = 2; de 1,25 a menos de 1,5 = 3; de 1,5 a menos de 1,8 = 4; a partir de 1,8 = 5.
+- Mostre meia estrela quando o progresso dentro da próxima faixa atingir pelo menos 50%.
+- Se ainda não for elegível, explique quantos jogos faltam em vez de parecer um erro.
+- Desempate de “Melhores”: estrelas, score interno, razão, vitórias, gols e nome.
+
+As estrelas devem ser vetoriais e visualmente consistentes no site e no PDF.
+
+## 17. Cards dos jogadores
+
+Ao tocar em um jogador, abra um drawer no celular e dialog no desktop contendo:
+
+- avatar por iniciais ou foto, se existir;
+- nome, tipo e time atual;
+- estrelas e título de desempenho;
+- gols, vitórias e aproveitamento no baba atual;
+- gols, vitórias, babas, títulos e aproveitamento no histórico;
+- situação de pagamento quando o papel permitir;
+- para organizador: mover para outro time, retirar do time ou marcar que saiu do baba;
+- aviso de que jogos encerrados e seus gols permanecem intactos.
+
+Use esse mesmo componente de identidade nas listas, times, ranking, histórico e PDFs para evitar divergência.
+
+## 18. Pagamentos mensais
+
+Regras atuais:
+
+- vencimento no dia 10;
+- jogador de linha regular: R$ 15 por mês;
+- goleiro regular: R$ 7 por mês;
+- novato, convidado e desativado não entram na cobrança;
+- o pagamento é mensal, não apenas ligado a um baba;
+- cada jogador pode ser alternado entre pago e pendente;
+- conflito entre dois aparelhos deve ser resolvido pelo `updatedAt` daquele jogador, não pelo timestamp da lista inteira.
+
+Mostre:
+
+- total esperado;
+- total pago;
+- total pendente;
+- quantidade de confirmados e pendentes;
+- data de vencimento;
+- lista pesquisável e filtrável;
+- badges “Pago”, “Não pagou”, “Novato”, “Convidado” e “Desativado”.
+
+O relatório PDF de pagamentos deve separar: pagos, pendentes, novatos e desativados. Visitantes não devem virar cobrança mensal.
+
+## 19. Metas de compra
+
+Crie uma área para produtos/equipamentos do baba:
+
+- nome;
+- descrição;
+- prioridade alta, média ou baixa;
+- valor alvo;
+- valor arrecadado;
+- foto otimizada;
+- progresso percentual;
+- valor restante;
+- criação, edição, atualização rápida do arrecadado e exclusão com confirmação.
+
+Mostre no topo o saldo proveniente dos pagamentos confirmados, total de metas, total arrecadado e total que falta. Ordene metas por prioridade e atualização. Armazene imagens no Storage, valide tipo/tamanho no servidor e use URLs seguras; não mantenha grandes Data URLs no documento principal.
+
+## 20. Histórico dos babas
+
+- Liste babas finalizados do mais recente para o mais antigo, com paginação.
+- Mostre data, campeão/campeões e quantidade de jogos.
+- O detalhe deve conter campeão, jogadores campeões, presentes, times, jogos, tabela final, elencos congelados, placares, gols e critério de desempate.
+- O organizador pode editar data, gols, placar/autores e elencos históricos.
+- Qualquer correção deve recalcular os dados derivados e aplicar somente o delta nos agregados mensal e geral.
+- Permita excluir logicamente um baba finalizado com confirmação, revertendo seus agregados sem apagar outros dados.
+- Ao mover um jogador entre times no histórico, reescreva os elencos congelados compatíveis, mas preserve autoria e quantidade de gols.
+- Ao alterar gols históricos, mantenha placar, eventos de gol, resultado e ranking consistentes.
+
+## 21. PDFs, exportação, compartilhamento e backup
+
+Implemente relatórios com cabeçalho da marca, data de geração, resumo, paginação controlada e layout legível em A4:
+
+- pagamentos;
+- tabela/classificação, elencos e rankings por gols;
+- histórico do baba atual;
+- artilheiros do dia;
+- ranking atualmente exibido: mensal, geral, diário, goleiro ou histórico mensal;
+- ficha em branco do modo manual para impressão e preenchimento.
+
+O PDF deve preservar nomes, escudos/cores contextuais e estrelas. Não corte linhas nem gere páginas quase vazias. Para relatórios curtos, tente manter uma página sem reduzir o texto a ponto de ficar ilegível.
+
+Outras saídas:
+
+- exportar times/elencos em TXT;
+- exportar backup completo em JSON;
+- importar backup JSON validado;
+- o backup deve incluir jogadores, rankings, pagamentos, metas, babas e partidas, mas não imagens pesadas;
+- limite sugerido do backup: 25 MB;
+- antes de importar, valide schema/versão, mostre resumo e peça confirmação;
+- use Web Share API no celular e fallback para copiar link;
+- o link compartilhado deve abrir o fluxo de jogador/visualizador e nunca conceder escrita.
+
+## 22. Importação inteligente de relatórios
+
+No painel do organizador, permita colar texto recebido por WhatsApp, extraído de PDF ou digitado manualmente. O fluxo deve ser determinístico primeiro e usar IA somente como fallback quando a extração local tiver bloqueios.
+
+Extraia e revise:
+
+- data numérica ou por extenso;
+- times, número, cor de colete e elenco;
+- vitórias, empates, derrotas, pontos e gols informados;
+- artilheiros e jogadores com zero gols;
+- papéis independentes: convidado, goleiro e novato;
+- observações;
+- total de gols e artilheiro informados.
+
+Correspondência de nomes:
+
+- normalize caixa, acentos e espaços;
+- alias confirmado tem prioridade;
+- use similaridade de Levenshtein/Jaro-Winkler ou equivalente;
+- associação automática somente com confiança mínima de 0,92;
+- revisão a partir de 0,80;
+- se os dois melhores candidatos tiverem diferença menor que 0,035, exija escolha manual;
+- nunca associe duas pessoas silenciosamente ao mesmo jogador;
+- jogador realmente novo deve ser cadastrado como novato após confirmação;
+- permita confirmar sugestão, escolher cadastro existente, cadastrar novo ou desfazer a decisão.
+
+Validações bloqueantes incluem:
+
+- data ausente ou impossível;
+- nenhum time;
+- time duplicado;
+- vitórias/empates/derrotas ausentes;
+- pontos informados divergentes de `vitórias × 3 + empates`;
+- jogador em dois times;
+- artilheiro fora do elenco;
+- soma de gols divergente;
+- identidade ambígua ou não confirmada.
+
+Mostre confiança geral, avisos, candidatos comparados, resumo final e possível duplicidade. O salvamento automático só pode acontecer sem duplicidade, sem bloqueios, com todas as identidades resolvidas e confiança geral alta.
+
+Persistência:
+
+- gere hash do texto para idempotência;
+- detecte importações semelhantes;
+- salve baba, jogadores, aliases, rankings, avisos e auditoria em uma transação;
+- só atualize o estado da interface depois do commit remoto bem-sucedido;
+- mantenha histórico de importações;
+- permita editar/desativar aliases;
+- permita desfazer uma importação sem apagar jogadores/dados compartilhados indiscriminadamente;
+- a reversão deve marcar o baba como revertido, desfazer deltas de ranking e desativar apenas entidades que realmente pertencem àquela importação.
+
+Se houver endpoint de IA, ele deve exigir autenticação de organizador, limitar tamanho, validar a resposta contra schema estrito e nunca aceitar instruções presentes dentro do relatório como comandos.
+
+## 23. Assistente “IA do Baba”
+
+Mantenha um assistente de consulta baseado somente nos dados reais da conta. Ele pode ser determinístico ou usar um modelo com ferramentas, mas não pode inventar estatísticas.
+
+Consultas mínimas:
+
+- quem fez mais gols;
+- quem mais ganhou;
+- melhor e pior desempenho;
+- melhor fase recente;
+- comparar dois jogadores;
+- quem pagou ou ainda não pagou;
+- presença e time de um jogador;
+- ranking geral, mês atual, mês passado, hoje, ontem, uma data exata, último baba ou últimos N babas.
+
+Mostre sempre o período usado na resposta. Se não houver dados suficientes, diga isso claramente. Não exponha informações administrativas para o papel visualizador além do que for permitido na política do produto.
+
+## 24. Mesa Tática
+
+Reconstrua a mesa tática como uma prancheta de futsal touch-first:
+
+- quadra vetorial horizontal/vertical;
+- zoom, ajustar à tela, pan e tela cheia;
+- adicionar, mover, editar, duplicar, bloquear e excluir jogadores e bola;
+- jogador com nome, número, posição (goleiro, fixo, ala, pivô), equipe e cor;
+- ferramentas selecionar, mover visualização, jogador, bola e borracha;
+- rotas de movimentação, passe, chute, condução e marcação defensiva;
+- linha contínua, linha pontilhada, curva, zona/área e texto;
+- desfazer/refazer e limpar quadra;
+- formações rápidas 2–2, 3–1, 1–2–1, 4–0 e livre para cada equipe;
+- nome, descrição e categorias: ataque, defesa, bola parada, contra-ataque, saída de pressão e personalizada;
+- etapas da jogada com duração configurável;
+- gravação das posições por etapa e animação interpolada;
+- reproduzir, pausar, anterior, próxima, reiniciar, scrubber, velocidade 0,5×/1×/1,5×/2× e repetição;
+- biblioteca de jogadas salvas com pesquisa e filtro;
+- autosave local e, se autenticado, sincronização online;
+- exportar PNG sem controles, JSON editável, importar JSON validado, imprimir e gravar animação WebM quando o navegador suportar;
+- atalhos de teclado no desktop e gestos/pointer events no celular;
+- dock mobile com ferramentas essenciais e sugestão de girar o aparelho quando útil.
+
+Sanitize texto e JSON importado, imponha limites de entidades/desenhos/etapas e nunca injete SVG/HTML não confiável.
+
+## 25. Aparência e identidade dos times
+
+Preferências da interface:
+
+- modo sistema, claro ou escuro;
+- densidade compacta, normal ou confortável;
+- raio pequeno, médio ou grande;
+- animações completas ou reduzidas;
+- idioma inicial `pt-BR`;
+- restaurar padrão.
+
+Identidade de até cinco times-base:
+
+- nome, cor e escudo;
+- upload de PNG/JPG/WebP, otimizado;
+- restaurar um time ou todos;
+- somente organizador altera;
+- cores de time são contextuais e não devem comprometer contraste.
+
+Use um visual minimalista: superfícies claras/escuras sólidas, hierarquia por espaçamento e tipografia, bordas discretas, sombras leves e azul da marca como ação principal. Evite glassmorphism excessivo, gradientes decorativos, textos em caixa alta demais e excesso de badges. Use cor forte principalmente para ação, estado e identidade do time.
+
+## 26. Experiência mobile Android e iOS
+
+Valide especificamente:
+
+- largura de 320 px até tablets;
+- `viewport-fit=cover` e safe areas no topo/rodapé;
+- `100dvh` em telas que ocupam a altura toda;
+- nenhum controle importante escondido pela barra inferior ou teclado;
+- inputs com fonte mínima de 16 px no iOS para evitar zoom automático;
+- sheets e dialogs com rolagem interna previsível;
+- tabelas sem estouro horizontal destrutivo;
+- estados hover nunca essenciais;
+- feedback imediato ao toque, skeletons curtos e mensagens em linguagem simples;
+- suporte a `prefers-reduced-motion` e `prefers-color-scheme`;
+- PWA standalone com ícone e nome corretos;
+- toque, teclado, leitor de tela e orientação horizontal;
+- vibração/haptic apenas como melhoria opcional quando suportada, nunca como único feedback.
+
+## 27. Sincronização, consistência e funcionamento online
+
+- O aplicativo é online e deve sincronizar alterações entre aparelhos em tempo real.
+- Mostre estado “Conectando”, “Salvando”, “Online”, “Offline” ou “Alterações pendentes”.
+- Preserve um cache local seguro para leitura e uma fila de mutações autorizadas quando a conexão cair.
+- Use retry com backoff, idempotency keys e operações transacionais.
+- O servidor é a autoridade final.
+- Não sobrescreva estado novo com snapshot antigo.
+- Resolva pagamentos por timestamp individual do jogador.
+- Preserve a ordem da fila e os lotes do sorteio durante merges.
+- Mantenha snapshots de elencos por partida.
+- Evite documentos gigantes; normalize babas, participantes, times, jogos, gols, pagamentos e estatísticas em subcoleções.
+- Paginação: carregue primeiro o baba ativo e um conjunto recente; busque histórico antigo sob demanda.
+
+## 28. Compatibilidade e migração dos dados atuais
+
+Se o banco legado existir, preserve o namespace por conta `baba_accounts/{uid}` e crie uma camada de compatibilidade/migração versionada. Migre ou adapte:
+
+- jogadores e status;
+- baba ativo e históricos;
+- participantes, visitantes e flags;
+- times, ordem, lotes e identidade;
+- partidas e eventos de gol;
+- pagamentos mensais;
+- rankings geral/mensal/por baba;
+- metas de compra e imagens;
+- aliases e histórico de importações.
+
+A migração deve ser aditiva, retomável e idempotente, com dry-run, contagens antes/depois, checksum quando aplicável, logs e rollback. Nunca trate `.next` ou `localStorage` como fonte definitiva de produção. Forneça instruções claras para variáveis de ambiente e migração.
+
+## 29. Integração MCP existente
+
+Se a instalação atual usa o servidor MCP, não quebre essa integração. Mantenha ou adapte:
+
+- resumo, lista de contas, jogadores, eventos, detalhe de evento, leitura de documento e listagem de coleção;
+- escrita desativada por padrão;
+- mutação em duas etapas: preparar alteração e salvar com confirmação assinada de curta duração;
+- confirmação vinculada à conta, caminho, payload e modo;
+- OAuth 2.1 Authorization Code com PKCE;
+- auditoria e soft delete;
+- nenhuma credencial ou segredo no navegador.
+
+Trate MCP como módulo administrativo separado da experiência principal; ele não deve atrasar o carregamento do aplicativo.
+
+## 30. Estados e mensagens obrigatórios
+
+Toda tela deve possuir:
+
+- skeleton de carregamento;
+- estado vazio com próxima ação útil;
+- erro recuperável com botão tentar novamente;
+- confirmação de sucesso;
+- bloqueio claro quando a ação depende de uma etapa anterior;
+- confirmação reforçada para reset, exclusão, reversão de importação e finalização com jogo em andamento;
+- feedback acessível via `aria-live` sem duplicar mensagens.
+
+Use frases curtas, por exemplo: “Marque pelo menos 8 jogadores de linha”, “Jogo salvo. Próxima partida preparada” e “Pagamento salvo neste aparelho e aguardando sincronização”.
+
+## 31. Testes obrigatórios
+
+Crie testes unitários para:
+
+- sorteio sem duplicidade e distribuição de goleiros;
+- sorteio de recém-chegados por lote;
+- rodízio em vitória e nos empates com 2, 3 e 4+ times;
+- pontos, tabela, campeão e co-campeões;
+- cálculo diário, mensal e geral sem duplicação;
+- ranking de pior jogador e de goleiros;
+- sistema de estrelas, meia estrela, média ponderada e elegibilidade;
+- preços, isenções e conflito individual de pagamento;
+- correção de placar, autores e gols sem artilheiro;
+- preservação de elencos históricos;
+- parser de importação, aliases, ambiguidade, duplicidade e reversão;
+- validação de backup e importação JSON;
+- permissões de organizador e visualizador.
+
+Crie testes de integração para Firestore/repositórios e testes end-to-end para:
+
+1. organizador entra, cria baba, marca presentes, sorteia, inicia e finaliza jogo;
+2. gol é marcado/desfeito e aparece na tabela/ranking em tempo real;
+3. empate de três times exige ímpar/par antes de continuar;
+4. jogador entra por código e acompanha sem conseguir editar;
+5. pagamento aparece no resumo e PDF corretos;
+6. modo manual gera ficha, recebe totais e finaliza no histórico;
+7. correção histórica atualiza todos os agregados uma única vez;
+8. importação revisada cria o baba e a reversão desfaz somente seus efeitos;
+9. PWA abre nas larguras de iPhone e Android sem overflow e com navegação alcançável;
+10. mesa tática cria, salva, anima e exporta/importa uma jogada.
+
+Execute também testes de regras/permissões no emulador do Firebase. Visualizador não pode escrever, uma conta não pode ler/escrever dados privados de outra e operações administrativas devem falhar sem sessão válida.
+
+## 32. Performance e qualidade
+
+- Evite carregar mesa tática, gerador de PDF e importador na rota principal; faça code splitting.
+- Evite waterfalls de dados; carregue blocos independentes em paralelo e use Suspense onde trouxer benefício real.
+- Não faça todo o aplicativo ser um único Client Component.
+- Otimize imagens e fontes; defina `sizes` e dimensões.
+- Evite hydration mismatch com datas, tema e APIs do navegador.
+- Use `loading.tsx`, `error.tsx`, `not-found.tsx` e boundary global adequados.
+- Não exponha stack traces ou dados sensíveis ao usuário.
+- Almeje bom Core Web Vitals em celular: sem layout shift perceptível e interação rápida.
+- Passe em lint, typecheck, testes e build de produção sem warnings relevantes.
+
+## 33. Deploy e documentação
+
+Prepare o projeto para ficar online, preferencialmente na Vercel, com Firebase como backend quando ele já for a fonte dos dados.
+
+Entregue:
+
+- `.env.example` sem segredos;
+- README com desenvolvimento local, emuladores, testes, build, deploy e rollback;
+- regras e índices do Firebase;
+- script de migração/dry-run, quando houver legado;
+- configuração PWA;
+- instruções para domínios autorizados do Firebase Auth;
+- checklist pós-deploy;
+- observabilidade mínima para erros de servidor, falhas de sincronização e importações;
+- nenhuma chave privada no Git.
+
+## 34. Definição de pronto
+
+O trabalho só está concluído quando:
+
+- todas as funcionalidades essenciais acima estão implementadas de verdade;
+- o organizador consegue operar um baba completo pelo celular;
+- o jogador consegue acompanhar em outro aparelho em tempo real e somente leitura;
+- modos Pelo Site e Manual funcionam do início ao histórico;
+- sorteio, rodízio, tabela, rankings, estrelas e pagamentos respeitam as regras;
+- PDFs, backup, compartilhamento e importação funcionam;
+- a mesa tática é utilizável por toque;
+- o app é instalável e confortável em Android/iOS;
+- autorização e isolamento multi-tenant foram testados;
+- dados legados podem ser migrados ou lidos sem perda;
+- lint, typecheck, testes e build passam;
+- não existem botões falsos, TODOs críticos ou dados mockados no fluxo de produção.
+
+Ao final, entregue um resumo objetivo contendo: arquitetura criada, rotas, modelo de dados, regras implementadas, testes executados, resultado do build, instruções de deploy, estratégia de migração e qualquer limitação real ainda existente.
+
+---
+
+Fim do prompt.
