@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { championIds, nextRotation, sortTable, teamPoints } from "@/lib/domain/competition";
 import { drawTeams } from "@/lib/domain/draw";
+import { normalizeBabaStatus } from "@/lib/domain/legacy";
 import { monthlyPriceCents, paymentSummary, resolvePaymentConflict } from "@/lib/domain/payments";
 import { calculateStars, minimumGames } from "@/lib/domain/stars";
 import type { Player, RankingRow, Team } from "@/lib/domain/types";
@@ -40,6 +41,14 @@ describe("tabela e campeão", () => {
 describe("pagamentos", () => {
   it("cobra R$15 de linha e R$7 de goleiro, isentando novato", () => { expect(monthlyPriceCents(player("L"))).toBe(1500); expect(monthlyPriceCents(player("G", "goleiro"))).toBe(700); expect(monthlyPriceCents(player("N", "linha", "novato"))).toBe(0); });
   it("resume valores e resolve conflito por jogador", () => { const a = player("A"); a.paid = true; const b = player("B", "goleiro"); expect(paymentSummary([a, b])).toEqual({ expectedCents: 2200, paidCents: 1500, paidCount: 1, pendingCount: 1 }); expect(resolvePaymentConflict({ paid: false, updatedAtMs: 20 }, { paid: true, updatedAtMs: 10 }).paid).toBe(false); });
+});
+
+describe("compatibilidade do histórico", () => {
+  it("não trata baba finalizado do site antigo como baba ativo", () => {
+    expect(normalizeBabaStatus("finalizado")).toBe("finished");
+    expect(normalizeBabaStatus("sorteado")).toBe("drawn");
+    expect(normalizeBabaStatus("em_andamento")).toBe("playing");
+  });
 });
 
 describe("estrelas", () => {

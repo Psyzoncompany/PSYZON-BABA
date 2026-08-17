@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { BarChart3, CircleUserRound, ListOrdered, MoreHorizontal, Radio, Settings2, ShieldCheck, UsersRound, Wifi, WifiOff } from "lucide-react";
+import { BarChart3, CircleDollarSign, CircleUserRound, ListOrdered, MoreHorizontal, Radio, Settings2, ShieldCheck, UsersRound, Wifi, WifiOff } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useBaba } from "@/components/providers/baba-provider";
 
@@ -25,6 +25,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Link href="/app/ao-vivo" className="sidebar-brand"><Image src="/brand/logo.png" width={42} height={42} alt="Baba Psyzon" /><span><small>Baba</small>Psyzon</span></Link>
       <nav aria-label="Navegação principal">{nav.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={pathname === href ? "active" : ""}><Icon /><span>{label}</span></Link>)}</nav>
       {auth.role === "organizer" && <Link href="/organizador" className={`organizer-link ${pathname === "/organizador" ? "active" : ""}`}><ShieldCheck /><span>Organizador</span></Link>}
+      <Link href="/app/pagamentos" className={`sidebar-utility ${pathname === "/app/pagamentos" ? "active" : ""}`}><CircleDollarSign /><span>Pagamentos</span></Link>
       <Link href="/aparencia" className="sidebar-utility"><Settings2 /><span>Aparência</span></Link>
       <div className="sidebar-user"><CircleUserRound /><div><strong>{auth.user?.displayName || (auth.role === "viewer" ? "Jogador" : "Comissão")}</strong><small>{auth.role === "viewer" ? "Somente leitura" : "Organizador"}</small></div></div>
     </aside>

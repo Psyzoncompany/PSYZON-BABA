@@ -8,10 +8,11 @@ Atualizado em 16/08/2026.
 - Next.js 16.3.1/Turbopack, com auditoria das dependências de produção sem vulnerabilidades;
 - identidade visual nova, mobile-first e acessível, sem copiar HTML/CSS legado;
 - Firebase Web SDK com cache persistente multiaba e listeners em tempo real;
-- login Google/e-mail, acesso viewer via API, rate limit básico e cookie assinado;
+- login Google no domínio autorizado, acesso viewer via API, rate limit básico e cookie assinado;
 - modelo multi-tenant em `baba_accounts/{accountId}`;
-- cadastro, presença, pagamentos, sorteio, times, placar, gols, cronômetro, rodízio, tabela, ranking, estrelas, metas e histórico;
-- mesa tática touch-first com autosave e JSON;
+- cadastro, presença, página de pagamentos, sorteio, times com cores/escudos originais, placar, gols, cronômetro, rodízio, tabela, ranking, estrelas e histórico;
+- importação idempotente dos jogadores, babas e jogos do banco legado;
+- layout específico mais compacto para iPhone;
 - regras Firestore/Storage, índices, migração dry-run/aplicável e documentação;
 - testes unitários das regras centrais.
 
@@ -27,12 +28,12 @@ Atualizado em 16/08/2026.
 
 - geração PDF diagramada no servidor; hoje a UI oferece impressão/PDF nativo do navegador;
 - editor histórico completo com aplicação transacional de deltas;
-- importador inteligente de relatórios e assistente de consultas;
-- fotos de metas e escudos através do Storage;
-- animação multietapas/WebM na mesa tática;
+- importador inteligente de relatórios em texto e assistente de consultas;
+- personalização de escudos através do Storage;
 - Firebase Custom Token para remover a leitura pública por caminho mantida para compatibilidade do viewer legado;
 - suíte E2E Playwright e testes de regras no emulador com credenciais de produção isoladas.
 
 ## Configuração externa pendente
 
-- `psyzon-baba.vercel.app` precisa ser adicionado em Firebase Console → Authentication → Settings → Authorized domains. A conta disponível na CLI não possui `firebaseauth.configs.update`; acesso por código e e-mail continuam disponíveis, mas login Google nesse domínio depende dessa autorização única por um proprietário do Firebase.
+- a conta disponível na CLI não possui `serviceusage.services.use` nem `firebaserules.releases.get`; por isso `firestore.rules` está preparado no repositório, mas a validação/publicação no Firebase exige que um proprietário conceda essas permissões;
+- enquanto isso, o site usa `baba-psyzon.vercel.app`, domínio já autorizado pelo Firebase, e o organizador entra com Google.

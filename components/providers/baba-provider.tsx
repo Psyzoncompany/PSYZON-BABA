@@ -9,7 +9,8 @@ import { db } from "@/lib/firebase/client";
 import { useAuth } from "./auth-provider";
 import { championIds, nextRotation } from "@/lib/domain/competition";
 import { drawTeams } from "@/lib/domain/draw";
-import type { Baba, Game, MatchMode, Player, Team } from "@/lib/domain/types";
+import { normalizeBabaStatus } from "@/lib/domain/legacy";
+import type { Baba, Game, Player, Team } from "@/lib/domain/types";
 
 export type SyncStatus = "connecting" | "saving" | "online" | "offline" | "pending";
 
@@ -18,7 +19,7 @@ interface BabaValue {
   addPlayer(name: string, type: Player["type"]): Promise<void>;
   updatePlayer(id: string, patch: Partial<Player>): Promise<void>;
   togglePresence(id: string): Promise<void>; togglePayment(id: string): Promise<void>;
-  createBaba(dateKey: string): Promise<void>; setMode(mode: MatchMode): Promise<void>; draw(): Promise<void>;
+  createBaba(dateKey: string): Promise<void>; draw(): Promise<void>;
   prepareGame(teamAId?: string, teamBId?: string): Promise<void>; startOrPauseGame(): Promise<void>;
   addGoal(teamId: string, playerId: string | null): Promise<void>; undoGoal(): Promise<void>; finishGame(): Promise<void>;
   finishBaba(): Promise<void>; generateViewerCode(): Promise<string>; resetActiveBaba(): Promise<void>;
@@ -49,11 +50,18 @@ function mapTeam(id: string, data: DocumentData): Team {
 }
 
 function mapBaba(id: string, data: DocumentData): Baba {
+  const status = normalizeBabaStatus(data.status);
+  const legacyChampion = data.campeaoDoBaba;
+  const championTeamIds = Array.isArray(data.championTeamIds)
+    ? data.championTeamIds.map(String)
+    : legacyChampion && typeof legacyChampion === "object"
+      ? [String(legacyChampion.teamId || legacyChampion.timeId || legacyChampion.id || "legacy-champion")]
+      : [];
   return {
-    id, dateKey: String(data.dateKey || data.dataISO || new Date().toISOString().slice(0, 10)), status: data.status || "open",
-    matchMode: data.matchMode === "manual" ? "manual" : "online", currentGameId: data.currentGameId || null,
+    id, dateKey: String(data.dateKey || data.dataISO || new Date().toISOString().slice(0, 10)), status,
+    matchMode: "manual", currentGameId: data.currentGameId || null,
     queue: Array.isArray(data.queue) ? data.queue : Array.isArray(data.currentQueue) ? data.currentQueue : [],
-    drawBatchCount: Number(data.drawBatchCount || 0), championTeamIds: Array.isArray(data.championTeamIds) ? data.championTeamIds : [],
+    drawBatchCount: Number(data.drawBatchCount || 0), championTeamIds,
     createdAtMs: Number(data.createdAtMs || data.criadoEm || 0), finishedAtMs: Number(data.finishedAtMs || data.finalizadoEm || 0) || null, updatedAtMs: Number(data.updatedAtMs || 0),
   };
 }
@@ -131,15 +139,10 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
 
   const createBaba = useCallback((dateKey: string) => saving(async () => {
     const uid = owner(); const id = crypto.randomUUID(); const timestamp = now(); const batch = writeBatch(db);
-    batch.set(doc(db, "baba_accounts", uid, "babas", id), { id, dateKey, dataISO: dateKey, status: "open", matchMode: "online", currentGameId: null, queue: [], drawBatchCount: 0, championTeamIds: [], schemaVersion: 3, createdAtMs: timestamp, updatedAtMs: timestamp });
+    batch.set(doc(db, "baba_accounts", uid, "babas", id), { id, dateKey, dataISO: dateKey, status: "open", matchMode: "manual", currentGameId: null, queue: [], drawBatchCount: 0, championTeamIds: [], schemaVersion: 3, createdAtMs: timestamp, updatedAtMs: timestamp });
     batch.set(doc(db, "baba_accounts", uid, "meta", "live"), { activeBabaId: id, status: "open", schemaVersion: 3, updatedAtMs: timestamp }, { merge: true });
     await batch.commit(); setActiveId(id);
   }), [owner, saving]);
-
-  const setMode = useCallback((mode: MatchMode) => saving(async () => {
-    const uid = owner(); if (!activeBaba || teams.length) throw new Error("O modo fica bloqueado depois do sorteio.");
-    await updateDoc(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { matchMode: mode, updatedAtMs: now() });
-  }), [owner, saving, activeBaba, teams.length]);
 
   const draw = useCallback(() => saving(async () => {
     const uid = owner(); if (!activeBaba) throw new Error("Inicie um baba primeiro.");
@@ -198,7 +201,7 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
     const uid = owner(); const bytes = new TextEncoder().encode(`${uid}:0`); const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)); const code = String(new DataView(digest.buffer).getUint32(0, false) % 10_000).padStart(4, "0"); const hashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code)); const hash = [...new Uint8Array(hashBytes)].map((item) => item.toString(16).padStart(2, "0")).join(""); const timestamp = now(); const configRef = doc(db, "baba_access_config", uid); const previous = await getDoc(configRef); const previousHash = previous.data()?.currentCodeHash; const batch = writeBatch(db); if (previousHash && previousHash !== hash) batch.set(doc(db, "baba_access_codes", previousHash), { active: false, revokedAtMs: timestamp, updatedAtMs: timestamp }, { merge: true }); batch.set(configRef, { currentCodeHash: hash, active: true, expiresAtMs: 253402300799000, updatedAtMs: timestamp, updatedBy: uid, schemaVersion: 1 }, { merge: true }); batch.set(doc(db, "baba_access_codes", hash), { accountId: uid, active: true, expiresAtMs: 253402300799000, createdAtMs: timestamp, updatedAtMs: timestamp, schemaVersion: 1 }, { merge: true }); await batch.commit(); return code;
   }), [owner, saving]);
 
-  const value = useMemo<BabaValue>(() => ({ loading, syncStatus, players, teams, games, babas, activeBaba, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMode, draw, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, finishBaba, generateViewerCode, resetActiveBaba }), [loading, syncStatus, players, teams, games, babas, activeBaba, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMode, draw, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, finishBaba, generateViewerCode, resetActiveBaba]);
+  const value = useMemo<BabaValue>(() => ({ loading, syncStatus, players, teams, games, babas, activeBaba, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, draw, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, finishBaba, generateViewerCode, resetActiveBaba }), [loading, syncStatus, players, teams, games, babas, activeBaba, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, draw, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, finishBaba, generateViewerCode, resetActiveBaba]);
   return <BabaContext.Provider value={value}>{children}</BabaContext.Provider>;
 }
 

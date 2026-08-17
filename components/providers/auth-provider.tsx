@@ -1,13 +1,13 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { GoogleAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut, type User } from "firebase/auth";
+import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, type User } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 
 type Role = "organizer" | "viewer" | null;
 interface AuthValue {
   loading: boolean; user: User | null; accountId: string | null; role: Role;
-  signInGoogle: () => Promise<void>; signInCommission: (email: string, password: string) => Promise<void>;
+  signInGoogle: () => Promise<void>;
   signInViewer: (code: string, remember: boolean) => Promise<void>; logout: () => Promise<void>;
 }
 
@@ -44,7 +44,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AuthValue>(() => ({
     loading, user, accountId: user?.uid || viewerAccountId, role: user ? "organizer" : viewerAccountId ? "viewer" : null,
     signInGoogle: async () => { await signInWithPopup(auth, new GoogleAuthProvider()); },
-    signInCommission: async (email, password) => { await signInWithEmailAndPassword(auth, email, password); },
     signInViewer, logout,
   }), [loading, user, viewerAccountId, signInViewer, logout]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,6 +1,6 @@
 export type PlayerType = "linha" | "goleiro";
 export type PlayerStatus = "regular" | "novato" | "convidado" | "desativado";
-export type MatchMode = "online" | "manual";
+export type MatchMode = "manual";
 
 export interface Player {
   id: string;

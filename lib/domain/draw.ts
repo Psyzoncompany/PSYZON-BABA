@@ -1,4 +1,5 @@
 import type { Player, Team } from "./types";
+import { getTeamTheme } from "./team-theme";
 
 export type RandomSource = () => number;
 
@@ -12,8 +13,6 @@ export function shuffle<T>(items: readonly T[], random: RandomSource = Math.rand
   }
   return copy;
 }
-
-const TEAM_COLORS = ["#1867d2", "#ef4444", "#16a34a", "#f59e0b", "#7c3aed"];
 
 export function drawTeams(
   players: readonly Player[],
@@ -40,18 +39,22 @@ export function drawTeams(
   const now = Date.now();
   const startOrder = options.startOrder ?? 1;
   const batch = options.drawBatch ?? 1;
-  const result = groups.filter((group) => group.length).map((group, index) => ({
-    id: crypto.randomUUID(),
-    name: `Time ${startOrder + index}`,
-    color: TEAM_COLORS[(startOrder + index - 1) % TEAM_COLORS.length],
-    order: startOrder + index,
-    playerIds: shuffle(group, random).map((player) => player.id),
-    drawBatch: batch,
-    lateArrival: Boolean(options.lateArrival),
-    active: true,
-    stats: { wins: 0, draws: 0, losses: 0, goalsFor: 0, goalsAgainst: 0 },
-    updatedAtMs: now,
-  } satisfies Team));
+  const result: Team[] = groups.filter((group) => group.length).map((group, index) => {
+    const order = startOrder + index;
+    const theme = getTeamTheme(order);
+    return {
+      id: crypto.randomUUID(),
+      name: `Time ${order}`,
+      color: theme.color,
+      order,
+      playerIds: shuffle(group, random).map((player) => player.id),
+      drawBatch: batch,
+      lateArrival: Boolean(options.lateArrival),
+      active: true,
+      stats: { wins: 0, draws: 0, losses: 0, goalsFor: 0, goalsAgainst: 0 },
+      updatedAtMs: now,
+    } satisfies Team;
+  });
 
   if (visitors.length) {
     result.push({
