@@ -1,0 +1,73 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function owns(accountId) { return signedIn() && request.auth.uid == accountId; }
+    function validAccountId(accountId) { return accountId.size() > 5 && accountId.size() <= 128; }
+
+    // Índice por hash do código. Apenas leitura pontual; listar os hashes é proibido.
+    match /baba_access_codes/{codeHash} {
+      allow get: if codeHash.size() == 64;
+      allow list: if false;
+      allow create, update: if signedIn() && request.resource.data.accountId == request.auth.uid && codeHash.size() == 64;
+      allow delete: if false;
+    }
+    match /baba_access_config/{accountId} {
+      allow get, create, update: if owns(accountId);
+      allow list, delete: if false;
+    }
+
+    match /baba_accounts/{accountId} {
+      allow read, write: if owns(accountId);
+
+      match /meta/{id} {
+        allow read: if validAccountId(accountId);
+        allow create, update: if owns(accountId);
+        allow delete: if false;
+      }
+      match /players/{playerId} {
+        allow read: if validAccountId(accountId);
+        allow create, update: if owns(accountId)
+          && request.resource.data.id == playerId
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 80;
+        allow delete: if false;
+      }
+      match /babas/{babaId} {
+        allow read: if validAccountId(accountId);
+        allow create, update: if owns(accountId) && request.resource.data.id == babaId;
+        allow delete: if false;
+        match /{document=**} {
+          allow read: if validAccountId(accountId);
+          allow create, update: if owns(accountId);
+          allow delete: if false;
+        }
+      }
+      match /purchase_goals/{goalId} {
+        allow read: if validAccountId(accountId);
+        allow create, update: if owns(accountId) && request.resource.data.id == goalId;
+        allow delete: if false;
+      }
+      match /months/{monthId}/{document=**} {
+        allow read: if validAccountId(accountId);
+        allow create, update: if owns(accountId);
+        allow delete: if false;
+      }
+      match /player_stats/{playerId} {
+        allow read: if validAccountId(accountId);
+        allow create, update: if owns(accountId);
+        allow delete: if false;
+      }
+      match /{privateCollection}/{document=**} {
+        allow read, write: if owns(accountId);
+      }
+    }
+
+    // Compatibilidade de leitura durante a migração do banco legado.
+    match /babas/{id}/{document=**} { allow read: if true; allow write: if false; }
+    match /baba_players/{id} { allow read: if true; allow write: if false; }
+    match /baba_months/{id}/{document=**} { allow read: if true; allow write: if false; }
+    match /player_stats/{id} { allow read: if true; allow write: if false; }
+    match /orders_public/baba_live_state { allow read: if true; allow write: if false; }
+  }
+}

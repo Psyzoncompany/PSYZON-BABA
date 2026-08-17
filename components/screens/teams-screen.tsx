@@ -1,0 +1,17 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { Check, CircleUserRound, Shuffle, UsersRound } from "lucide-react";
+import { useAuth } from "@/components/providers/auth-provider";
+import { useBaba } from "@/components/providers/baba-provider";
+import { EmptyState, ScreenHeading } from "@/components/ui/screen";
+
+export function TeamsScreen() {
+  const { role } = useAuth(); const baba = useBaba(); const [error, setError] = useState(""); const present = baba.players.filter((player) => player.present);
+  const draw = async () => { setError(""); try { await baba.draw(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível sortear."); } };
+  return <><ScreenHeading eyebrow="Times" title={baba.teams.length ? `${baba.teams.length} times em campo` : "Monte os times do dia"} description={baba.teams.length ? `${present.length} pessoas distribuídas sem repetição.` : "Marque quem chegou. O sorteio equilibra linha e goleiros."} action={role === "organizer" && baba.activeBaba && !baba.teams.length ? <button className="button primary" onClick={draw}><Shuffle /> Sortear times</button> : undefined} />
+    {!baba.activeBaba ? <EmptyState icon={<UsersRound />} title="Comece pelo painel" text="Inicie um baba para marcar presenças e sortear." action={role === "organizer" && <Link className="button primary" href="/organizador">Iniciar baba</Link>} /> : !baba.teams.length ? <section className="card attendance-card"><div className="card-title-row"><div><h2>Quem está presente?</h2><p>{present.length} selecionados</p></div><span className={`count-ring ${present.length >= 8 ? "ready" : ""}`}>{present.length}</span></div><div className="attendance-list">{baba.players.map((player) => <button key={player.id} className={player.present ? "selected" : ""} disabled={role !== "organizer"} onClick={() => baba.togglePresence(player.id)}><span className="avatar">{player.name.slice(0, 2).toUpperCase()}</span><span><strong>{player.name}</strong><small>{player.type === "goleiro" ? "Goleiro" : "Linha"} · {player.paid ? "Pago" : player.status === "novato" ? "Novato" : "Pendente"}</small></span><span className="presence-check">{player.present && <Check />}</span></button>)}</div>{!baba.players.length && <p className="inline-empty">Cadastre jogadores no painel do organizador.</p>}<div className="sticky-card-action"><p>{present.filter((player) => player.type === "linha" && player.status !== "convidado").length < 8 ? "Marque pelo menos 8 jogadores de linha" : "Tudo pronto para o sorteio"}</p>{role === "organizer" && <button className="button primary" onClick={draw} disabled={present.filter((player) => player.type === "linha" && player.status !== "convidado").length < 8}><Shuffle /> Sortear agora</button>}</div></section> : <div className="team-grid">{baba.teams.map((team) => <article className="team-card" key={team.id} style={{ "--team": team.color } as React.CSSProperties}><header><span className="team-symbol">{team.order}</span><div><h2>{team.name}</h2><p>{team.playerIds.length} jogadores</p></div>{team.lateArrival && <span className="badge">Chegou depois</span>}</header><div className="roster">{team.playerIds.map((id, index) => { const player = baba.players.find((item) => item.id === id); return <div key={id}><span>{index + 1}</span><CircleUserRound /><strong>{player?.name || "Jogador"}</strong>{player?.type === "goleiro" && <small>GOL</small>}</div>; })}</div></article>)}</div>}
+    {error && <p className="message error" role="alert">{error}</p>}
+  </>;
+}

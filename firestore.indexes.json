@@ -1,0 +1,7 @@
+{
+  "indexes": [
+    { "collectionGroup": "babas", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] },
+    { "collectionGroup": "purchase_goals", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "deleted", "order": "ASCENDING" }, { "fieldPath": "updatedAtMs", "order": "DESCENDING" }] }
+  ],
+  "fieldOverrides": []
+}

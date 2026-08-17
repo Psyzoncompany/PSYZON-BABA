@@ -1,0 +1,4 @@
+import type { ReactNode } from "react";
+export function ScreenHeading({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description?: string; action?: ReactNode }) { return <div className="screen-heading"><div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h1>{title}</h1>{description && <p>{description}</p>}</div>{action}</div>; }
+export function EmptyState({ icon, title, text, action }: { icon: ReactNode; title: string; text: string; action?: ReactNode }) { return <div className="empty-state"><span className="empty-icon">{icon}</span><h2>{title}</h2><p>{text}</p>{action}</div>; }
+export function StatCard({ label, value, note }: { label: string; value: string | number; note?: string }) { return <div className="stat-card"><span>{label}</span><strong>{value}</strong>{note && <small>{note}</small>}</div>; }
