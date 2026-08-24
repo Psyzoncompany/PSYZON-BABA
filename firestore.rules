@@ -1,73 +1,215 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
-    function owns(accountId) { return signedIn() && request.auth.uid == accountId; }
-    function validAccountId(accountId) { return accountId.size() > 5 && accountId.size() <= 128; }
-
-    // Índice por hash do código. Apenas leitura pontual; listar os hashes é proibido.
-    match /baba_access_codes/{codeHash} {
-      allow get: if codeHash.size() == 64;
-      allow list: if false;
-      allow create, update: if signedIn() && request.resource.data.accountId == request.auth.uid && codeHash.size() == 64;
-      allow delete: if false;
+    function signedIn() {
+      return request.auth != null;
     }
-    match /baba_access_config/{accountId} {
-      allow get, create, update: if owns(accountId);
-      allow list, delete: if false;
+
+    function isOrganizer(accountId) {
+      return signedIn()
+        && request.auth.uid == accountId
+        && (!request.auth.token.keys().hasAny(['role']) || request.auth.token.role != 'viewer');
+    }
+
+    function isViewer(accountId) {
+      return signedIn()
+        && request.auth.token.role == 'viewer'
+        && request.auth.token.accountId == accountId
+        && request.auth.token.accessVersion is int
+        && request.auth.token.sessionExpiresAt is int
+        && request.time.toMillis() < request.auth.token.sessionExpiresAt
+        && exists(/databases/$(database)/documents/baba_accounts/$(accountId)/meta/security)
+        && get(/databases/$(database)/documents/baba_accounts/$(accountId)/meta/security).data.viewerAccessVersion == request.auth.token.accessVersion;
+    }
+
+    function canRead(accountId) {
+      return isOrganizer(accountId) || isViewer(accountId);
+    }
+
+    function validId(value) {
+      return value is string && value.size() > 0 && value.size() <= 128;
+    }
+
+    function validPlayer(playerId) {
+      return request.resource.data.id == playerId
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.type in ['linha', 'goleiro']
+        && request.resource.data.status in ['regular', 'novato', 'convidado', 'desativado']
+        && request.resource.data.active is bool
+        && request.resource.data.updatedAtMs is number;
+    }
+
+    function validBaba(babaId) {
+      return request.resource.data.id == babaId
+        && request.resource.data.dateKey is string
+        && request.resource.data.dateKey.size() == 10
+        && request.resource.data.status in ['open', 'drawn', 'prepared', 'playing', 'tie_break_pending', 'finished']
+        && request.resource.data.matchMode in ['online', 'manual']
+        && request.resource.data.updatedAtMs is number;
+    }
+
+    function validTeam(teamId) {
+      return request.resource.data.id == teamId
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 40
+        && request.resource.data.playerIds is list
+        && request.resource.data.playerIds.size() <= 40
+        && request.resource.data.updatedAtMs is number;
+    }
+
+    function validGame(gameId) {
+      return request.resource.data.id == gameId
+        && request.resource.data.sequence is number
+        && request.resource.data.teamAId is string
+        && request.resource.data.teamBId is string
+        && request.resource.data.teamAId != request.resource.data.teamBId
+        && request.resource.data.scoreA is number
+        && request.resource.data.scoreA >= 0
+        && request.resource.data.scoreB is number
+        && request.resource.data.scoreB >= 0
+        && request.resource.data.status in ['prepared', 'running', 'paused', 'finished']
+        && request.resource.data.updatedAtMs is number;
+    }
+
+    // Códigos, configurações e rate limits existem somente no servidor Admin.
+    match /baba_access_codes/{document=**} {
+      allow read, write: if false;
+    }
+    match /baba_access_config/{document=**} {
+      allow read, write: if false;
+    }
+    match /baba_rate_limits/{document=**} {
+      allow read, write: if false;
+    }
+    match /baba_commission_config/{document=**} {
+      allow read, write: if false;
     }
 
     match /baba_accounts/{accountId} {
-      allow read, write: if owns(accountId);
+      allow read: if canRead(accountId);
+      allow write: if false;
 
       match /meta/{id} {
-        allow read: if validAccountId(accountId);
-        allow create, update: if owns(accountId);
+        allow read: if canRead(accountId);
+        allow create, update: if isOrganizer(accountId)
+          && id != 'security'
+          && request.resource.data.updatedAtMs is number;
         allow delete: if false;
       }
+
       match /players/{playerId} {
-        allow read: if validAccountId(accountId);
-        allow create, update: if owns(accountId)
-          && request.resource.data.id == playerId
-          && request.resource.data.name is string
-          && request.resource.data.name.size() <= 80;
+        allow read: if canRead(accountId);
+        allow create: if isOrganizer(accountId) && validPlayer(playerId);
+        allow update: if isOrganizer(accountId) && validPlayer(playerId)
+          && request.resource.data.updatedAtMs >= resource.data.updatedAtMs;
         allow delete: if false;
       }
+
       match /babas/{babaId} {
-        allow read: if validAccountId(accountId);
-        allow create, update: if owns(accountId) && request.resource.data.id == babaId;
+        allow read: if canRead(accountId);
+        allow create: if isOrganizer(accountId) && validBaba(babaId);
+        allow update: if isOrganizer(accountId) && validBaba(babaId)
+          && request.resource.data.updatedAtMs >= resource.data.updatedAtMs;
         allow delete: if false;
-        match /{document=**} {
-          allow read: if validAccountId(accountId);
-          allow create, update: if owns(accountId);
+
+        match /teams/{teamId} {
+          allow read: if canRead(accountId);
+          allow create, update: if isOrganizer(accountId) && validTeam(teamId);
           allow delete: if false;
         }
+
+        match /games/{gameId} {
+          allow read: if canRead(accountId);
+          allow create, update: if isOrganizer(accountId) && validGame(gameId);
+          allow delete: if false;
+        }
+
+        match /participants/{participantId} {
+          allow read: if canRead(accountId);
+          allow create, update: if isOrganizer(accountId)
+            && request.resource.data.playerId == participantId
+            && request.resource.data.updatedAtMs is number;
+          allow delete: if false;
+        }
+
+        match /manual_results/{teamId} {
+          allow read: if canRead(accountId);
+          allow create, update: if isOrganizer(accountId)
+            && request.resource.data.teamId == teamId
+            && request.resource.data.updatedAtMs is number;
+          allow delete: if false;
+        }
+
+        match /player_stats/{playerId} {
+          allow read: if canRead(accountId);
+          allow create, update: if isOrganizer(accountId)
+            && request.resource.data.playerId == playerId
+            && request.resource.data.updatedAtMs is number;
+          allow delete: if false;
+        }
+
+        match /undo_snapshots/{snapshotId} {
+          allow read, create: if isOrganizer(accountId);
+          allow update, delete: if false;
+        }
       }
-      match /purchase_goals/{goalId} {
-        allow read: if validAccountId(accountId);
-        allow create, update: if owns(accountId) && request.resource.data.id == goalId;
-        allow delete: if false;
-      }
-      match /months/{monthId}/{document=**} {
-        allow read: if validAccountId(accountId);
-        allow create, update: if owns(accountId);
-        allow delete: if false;
-      }
+
       match /player_stats/{playerId} {
-        allow read: if validAccountId(accountId);
-        allow create, update: if owns(accountId);
+        allow read: if canRead(accountId);
+        allow create, update: if isOrganizer(accountId) && validId(playerId)
+          && request.resource.data.updatedAtMs is number;
         allow delete: if false;
       }
-      match /{privateCollection}/{document=**} {
-        allow read, write: if owns(accountId);
+
+      match /months/{monthId}/rankings/{playerId} {
+        allow read: if canRead(accountId);
+        allow create, update: if isOrganizer(accountId)
+          && validId(monthId) && validId(playerId)
+          && request.resource.data.updatedAtMs is number;
+        allow delete: if false;
+      }
+
+      match /payments/{monthId}/players/{playerId} {
+        allow read: if isOrganizer(accountId) && validId(monthId) && validId(playerId);
+        allow create, update: if isOrganizer(accountId)
+          && validId(monthId) && validId(playerId)
+          && request.resource.data.updatedAtMs is number;
+        allow delete: if false;
+      }
+
+      match /purchase_goals/{goalId} {
+        allow read: if canRead(accountId);
+        allow create, update: if isOrganizer(accountId)
+          && request.resource.data.id == goalId
+          && request.resource.data.updatedAtMs is number;
+        allow delete: if false;
+      }
+
+      match /audit/{auditId} {
+        allow read: if isOrganizer(accountId);
+        allow create: if isOrganizer(accountId)
+          && request.resource.data.actorId == request.auth.uid
+          && request.resource.data.createdAtMs is number;
+        allow update, delete: if false;
+      }
+
+      match /aliases/{document=**} {
+        allow read, create, update: if isOrganizer(accountId);
+        allow delete: if false;
+      }
+
+      match /imports/{document=**} {
+        allow read, create, update: if isOrganizer(accountId);
+        allow delete: if false;
       }
     }
 
-    // Compatibilidade de leitura durante a migração do banco legado.
-    match /babas/{id}/{document=**} { allow read: if true; allow write: if false; }
-    match /baba_players/{id} { allow read: if true; allow write: if false; }
-    match /baba_months/{id}/{document=**} { allow read: if true; allow write: if false; }
-    match /player_stats/{id} { allow read: if true; allow write: if false; }
-    match /orders_public/baba_live_state { allow read: if true; allow write: if false; }
+    // Coleções globais do legado não ficam expostas na aplicação nova.
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }

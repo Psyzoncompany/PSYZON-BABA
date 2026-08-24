@@ -1,85 +1,136 @@
 # Baba Psyzon
 
-Aplicativo Next.js mobile-first para organizar o baba em tempo real. Usa o projeto Firebase legado `sitey-caixa-16e06`, preserva o namespace multi-tenant `baba_accounts/{accountId}` e mantém leitura de compatibilidade durante a migração.
+Aplicativo mobile-first para organizar um baba em tempo real. A nova aplicação usa Next.js 16 com App Router, React 19, TypeScript estrito e Firebase, mantendo os dados isolados em `baba_accounts/{accountId}`.
 
-## O que funciona
+## Funcionalidades implementadas
 
-- login do organizador com Google ou e-mail/senha;
-- acesso de jogador por código de quatro dígitos, validado no servidor e guardado em cookie `HttpOnly`;
-- jogadores, presença, tipo, pagamentos e código de visualização;
-- sorteio sem duplicidade, separação de visitantes e equilíbrio circular de goleiros;
-- partida em tempo real, cronômetro, gols com/sem artilheiro, desfazer gol e rodízio;
-- tabela, campeão/co-campeões, ranking, eficiência e estrelas;
-- metas de compra, histórico, backup JSON e impressão/PDF pelo navegador;
-- mesa tática touch-first com arrastar, desfazer/refazer, autosave e importação/exportação JSON;
-- PWA instalável, cache local do Firestore, estados online/offline/salvando e interface responsiva.
+- entrada do organizador com Google ou e-mail/senha da comissão;
+- entrada de jogador por código de quatro dígitos verificado no servidor, com rate limit, HMAC, código criptografado e sessão Firebase de somente leitura;
+- cadastro, status, presença e mensalidades por jogador;
+- modo Pelo Site com cronômetro, placar, gols com ou sem artilheiro, desfazer gol/jogo, fila e desempates;
+- modo Manual com ficha A4 e lançamento final de vitórias, empates, derrotas e gols por jogador;
+- sorteio puro e testável, lote de recém-chegados, goleiros equilibrados e montagem manual;
+- tabela ao vivo, campeão/co-campeões, rankings por escopo e critério e motor único de estrelas;
+- PDFs A4 de ranking, pagamentos e ficha manual;
+- backup JSON completo e restauração autenticada, com limite de 25 MB, prévia e confirmação;
+- mesa tática touch-first com quadros, animação, desfazer/refazer e JSON;
+- PWA, safe areas, tema/densidade, cache do Firestore e sincronização em tempo real.
+
+## Arquitetura e modelo de dados
+
+As telas ficam em `app/` e `components/`; regras determinísticas em `lib/domain/`; acesso Firebase em `lib/firebase/`; autorização em `lib/auth/`; e PDFs em `lib/pdf/`. Firebase Admin só é importado por módulos `server-only`.
+
+Estrutura principal do Firestore:
+
+```text
+baba_accounts/{accountId}
+├── players/{playerId}
+├── babas/{babaId}
+│   ├── teams/{teamId}
+│   ├── games/{gameId}
+│   ├── manual_results/{teamId}
+│   ├── player_stats/{playerId}
+│   └── undo_snapshots/{gameId}
+├── payments/{YYYY-MM}/players/{playerId}
+├── months/{YYYY-MM}/rankings/{playerId}
+├── player_stats/{playerId}
+├── imports/{importId}
+├── audit/{auditId}
+└── security/access
+```
+
+Valores monetários novos são centavos inteiros. Datas de evento usam `YYYY-MM-DD`; instantes usam milissegundos e são exibidos em `pt-BR`, no fuso `America/Bahia`. Partidas guardam snapshots dos elencos. Exclusões de entidades com histórico são lógicas.
+
+## Rotas
+
+- `/`: escolha de acesso;
+- `/app/ao-vivo`, `/app/times`, `/app/tabela`, `/app/ranking`, `/app/historico`;
+- `/app/pagamentos`, `/app/ficha-manual`, `/app/mais`;
+- `/organizador`, `/aparencia`, `/mesa-tatica`.
 
 ## Desenvolvimento
 
-Requer Node.js 20 ou superior.
+Requer Node.js 20.9 ou superior.
 
-```bash
+```powershell
 npm install
-copy .env.example .env.local
+Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Validação completa:
+Validação local:
 
-```bash
+```powershell
 npm run lint
 npm run typecheck
 npm test
+npm run test:rules
 npm run build
 ```
 
-Emuladores do Firebase:
+Para trabalhar manualmente com os emuladores:
 
-```bash
+```powershell
 npm run firebase:emulators
 ```
 
 ## Variáveis de ambiente
 
-Os valores `NEXT_PUBLIC_FIREBASE_*` são a configuração pública do Firebase Web SDK e não são senhas. A proteção dos dados depende de Authentication e das regras. Nunca exponha `FIREBASE_SERVICE_ACCOUNT_JSON` nem `BABA_SESSION_SECRET` ao navegador.
+Copie `.env.example` e configure:
 
-Em produção, configure obrigatoriamente `BABA_SESSION_SECRET` com pelo menos 48 bytes aleatórios. Para rotas administrativas futuras, configure `FIREBASE_SERVICE_ACCOUNT_JSON` apenas no ambiente do servidor.
+- `NEXT_PUBLIC_FIREBASE_*`: configuração pública do Firebase Web SDK;
+- `BABA_SESSION_SECRET`: assina a sessão HttpOnly do acesso por código;
+- `BABA_ACCESS_CODE_SECRET`: HMAC e criptografia do código;
+- `BABA_RATE_LIMIT_SECRET`: anonimiza IP/dispositivo no controle de tentativas;
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: credencial privada do Firebase Admin no servidor da Vercel;
+- `FIREBASE_PROJECT_ID`: projeto usado pelo Admin SDK.
 
-No Firebase Authentication, habilite Google e e-mail/senha e adicione o domínio final da Vercel em **Authentication → Settings → Authorized domains**.
+Use segredos independentes com pelo menos 48 bytes. Nunca use prefixo `NEXT_PUBLIC_` em credenciais privadas. No Firebase Authentication, habilite Google e e-mail/senha e inclua o domínio de produção em **Authentication → Settings → Authorized domains**.
+
+## Segurança
+
+O código de jogador não é salvo em texto puro. A API mantém apenas um índice HMAC e uma cópia AES-GCM para o organizador consultar; a rotação aumenta `accessVersion` e invalida sessões anteriores. O visualizador recebe Custom Token com `role=viewer`, `accountId`, validade e versão. As regras do Firestore bloqueiam escrita de viewer, acesso cruzado entre contas, coleções de segurança e coleções públicas antigas.
+
+Antes do deploy, publique regras e índices com uma conta que tenha permissão no projeto:
+
+```powershell
+npm run firebase:deploy
+```
+
+Como o Storage consulta `meta/security` para revogar viewer imediatamente, a primeira publicação pode pedir a ativação da permissão de regras entre Storage e Firestore.
 
 ## Migração do legado
 
-O script é aditivo, retomável e usa `set(..., { merge: true })`. Por padrão ele apenas mostra as contagens e checksum:
+O utilitário em `scripts/migrate-legacy.mjs` usa Firebase Admin, é aditivo e executa dry-run por padrão:
 
-```bash
-set BABA_ACCOUNT_UID=uid-do-organizador
-set FIREBASE_SERVICE_ACCOUNT_JSON={...}
+```powershell
+$env:BABA_ACCOUNT_UID="uid-do-organizador"
+$env:FIREBASE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
 node scripts/migrate-legacy.mjs
 node scripts/migrate-legacy.mjs --apply
 ```
 
-Antes de `--apply`, exporte um backup do Firestore. Depois, compare as contagens e o checksum do dry-run. O rollback consiste em manter a aplicação anterior apontando para as coleções raiz; esta migração não remove documentos legados.
+Revise contagens e checksum antes de `--apply` e exporte um backup do Firestore. O script usa `merge`, pode ser retomado e não remove as coleções antigas. A transformação detalhada de estruturas legadas divergentes deve ser validada em um projeto de homologação antes da produção.
 
 ## Deploy e rollback
 
-Na Vercel, importe `Psyzoncompany/PSYZON-BABA`, defina as variáveis de ambiente e use a raiz do repositório. Cada push em `main` gera produção quando a integração Git está ativa. Para deploy direto:
+1. Importe o repositório na Vercel e configure todas as variáveis de ambiente.
+2. Execute lint, tipos, testes, teste de regras e build no CI.
+3. Publique `firestore.rules`, `storage.rules` e `firestore.indexes.json`.
+4. Autorize o domínio final no Firebase Auth.
+5. Em dois navegadores, valide organizador e viewer na mesma conta.
 
-```bash
-npx vercel@latest --prod
-```
-
-Rollback: abra **Vercel → Deployments**, escolha a implantação estável anterior e use **Promote to Production**. As migrações são aditivas, então a versão anterior continua capaz de ler os dados legados.
+Para rollback da aplicação, promova o último deployment estável na Vercel. Como a migração é aditiva, as coleções legadas permanecem disponíveis para uma versão anterior; restaure dados novos por um backup validado quando necessário.
 
 ## Checklist pós-deploy
 
-1. Abrir a URL em janela anônima e confirmar que a tela de acesso carrega.
-2. Entrar como organizador, criar um baba e cadastrar um jogador.
-3. Gerar o código e entrar por ele em outro aparelho/janela; confirmar somente leitura.
-4. Marcar 8 jogadores de linha, sortear e validar a atualização entre os dois aparelhos.
-5. Iniciar/finalizar um jogo e confirmar tabela e ranking.
-6. Instalar a PWA em Android/iOS e conferir safe areas.
-7. Conferir erros de Functions e falhas de Firestore no console da Vercel/Firebase.
+1. Entrar como organizador e criar/rotacionar o código do jogador.
+2. Entrar pelo código em outro aparelho e confirmar que qualquer escrita é negada.
+3. Criar um baba, marcar pelo menos oito jogadores de linha, sortear e concluir uma partida.
+4. Validar o modo Manual e baixar a ficha PDF.
+5. Conferir mensalidades e PDF financeiro.
+6. Exportar um backup e testar sua prévia em homologação.
+7. Instalar a PWA em Android/iOS e verificar safe areas, teclado e navegação.
+8. Monitorar erros de servidor na Vercel e negações/falhas no Firebase.
 
-## Segurança e consistência
-
-Mutações são autorizadas pelas regras somente para `request.auth.uid == accountId`. O código de quatro dígitos nunca é salvo em texto puro; o índice usa SHA-256 e a sessão é assinada no servidor. As regras atuais preservam leitura pública por caminho para compatibilidade do viewer em tempo real. Para eliminar essa compatibilidade no futuro, emita Firebase Custom Tokens de viewer com claims `accountId/role` através de Firebase Admin e restrinja as regras por claim.
+Consulte `IMPLEMENTATION_STATUS.md` para o estado exato e as limitações ainda abertas.

@@ -27,10 +27,10 @@ describe("sorteio", () => {
 });
 
 describe("rodízio", () => {
-  it("mantém vencedor e manda perdedor ao fim", () => expect(nextRotation("a", "b", ["a", "b", "c", "d"], 2, 1)).toEqual({ court: ["a", "c"], queue: ["d", "b"], tieBreak: false }));
-  it("exige sorteio no empate com dois times", () => expect(nextRotation("a", "b", ["a", "b"], 1, 1).randomTieRequired).toBe(true));
-  it("exige ímpar/par no empate com três times", () => expect(nextRotation("a", "b", ["a", "b", "c"], 1, 1).tieBreak).toBe(true));
-  it("retira os dois no empate com quatro times", () => expect(nextRotation("a", "b", ["a", "b", "c", "d"], 1, 1)).toEqual({ court: ["c", "d"], queue: ["a", "b"], tieBreak: false }));
+  it("mantém vencedor e manda perdedor ao fim", () => expect(nextRotation("a", "b", ["a", "b", "c", "d"], 2, 1)).toEqual({ kind: "ready", court: ["a", "c"], queue: ["d", "b"] }));
+  it("exige sorteio no empate com dois times", () => expect(nextRotation("a", "b", ["a", "b"], 1, 1).kind).toBe("random_required"));
+  it("exige ímpar/par no empate com três times", () => expect(nextRotation("a", "b", ["a", "b", "c"], 1, 1).kind).toBe("manual_required"));
+  it("retira os dois no empate com quatro times", () => expect(nextRotation("a", "b", ["a", "b", "c", "d"], 1, 1)).toEqual({ kind: "ready", court: ["c", "d"], queue: ["a", "b"] }));
 });
 
 describe("tabela e campeão", () => {

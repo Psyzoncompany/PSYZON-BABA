@@ -2,45 +2,59 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { CalendarDays, CircleDollarSign, DatabaseZap, Download, LoaderCircle, LogOut, Palette, Printer } from "lucide-react";
+import { useRef, useState } from "react";
+import { CalendarDays, CircleDollarSign, Download, FileUp, Goal, LoaderCircle, LogOut, Palette, Printer } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
-import { useBaba } from "@/components/providers/baba-provider";
-import { importLegacyHistory } from "@/lib/firebase/import-legacy-history";
 import { ScreenHeading } from "@/components/ui/screen";
 
 export function MoreScreen() {
   const auth = useAuth();
-  const baba = useBaba();
   const router = useRouter();
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
 
-  const backup = () => {
-    const payload = JSON.stringify({ schemaVersion: 3, exportedAt: new Date().toISOString(), players: baba.players, babas: baba.babas, teams: baba.teams, games: baba.games }, null, 2);
-    const href = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.download = `baba-psyzon-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(href);
+  const backup = async () => {
+    setError(""); setMessage(""); setExporting(true);
+    try {
+      const token = await auth.organizerToken();
+      const response = await fetch("/api/backup", { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({})) as { error?: string }).error || "Não foi possível exportar o backup.");
+      const href = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = href; anchor.download = `baba-psyzon-backup-${new Date().toISOString().slice(0, 10)}.json`; anchor.click();
+      URL.revokeObjectURL(href); setMessage("Backup completo exportado com segurança.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível exportar o backup.");
+    } finally { setExporting(false); }
   };
 
-  const importHistory = async () => {
-    if (!auth.accountId || auth.role !== "organizer") return;
-    if (!window.confirm("Importar os jogadores e babas finalizados do site antigo? A importação pode ser repetida sem duplicar os registros.")) return;
+  const importBackup = async (file: File) => {
+    if (auth.role !== "organizer") return;
+    if (file.size > 25 * 1024 * 1024) { setError("O arquivo excede o limite de 25 MB."); return; }
     setError("");
     setMessage("");
     setImporting(true);
     try {
-      const result = await importLegacyHistory(auth.accountId);
-      setMessage(`${result.babas} babas, ${result.games} jogos e ${result.players} jogadores encontrados no site antigo.`);
+      const backupFile = JSON.parse(await file.text()) as unknown;
+      const token = await auth.organizerToken();
+      const previewResponse = await fetch("/api/backup", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ mode: "preview", backup: backupFile }) });
+      const preview = await previewResponse.json() as { error?: string; documents?: number; collections?: string[]; exportedAt?: string };
+      if (!previewResponse.ok) throw new Error(preview.error || "Backup inválido.");
+      const approved = window.confirm(`Backup válido com ${preview.documents} documentos em ${preview.collections?.length || 0} coleções. Importar e mesclar com esta conta?`);
+      if (!approved) { setMessage("Importação cancelada. Nenhum dado foi alterado."); return; }
+      const response = await fetch("/api/backup", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ mode: "apply", confirmation: "IMPORTAR", backup: backupFile }) });
+      const result = await response.json() as { error?: string; documents?: number };
+      if (!response.ok) throw new Error(result.error || "Não foi possível importar o backup.");
+      setMessage(`${result.documents} documentos importados. Os dados foram mesclados sem apagar os atuais.`);
     } catch (cause) {
-      console.error("[importação] Falha ao importar histórico legado", cause);
-      setError(cause instanceof Error ? cause.message : "Não foi possível importar o histórico antigo.");
+      console.error("[backup] Falha ao importar", cause);
+      setError(cause instanceof Error ? cause.message : "Não foi possível importar o backup.");
     } finally {
       setImporting(false);
+      if (fileInput.current) fileInput.current.value = "";
     }
   };
 
@@ -48,13 +62,15 @@ export function MoreScreen() {
     <ScreenHeading eyebrow="Mais opções" title="Tudo do seu baba" description="Histórico, pagamentos, aparência, arquivos e acesso." />
     <div className="menu-grid">
       <Link href="/app/historico"><span><CalendarDays /></span><div><strong>Histórico</strong><small>Veja os babas finalizados</small></div></Link>
-      <Link href="/app/pagamentos"><span><CircleDollarSign /></span><div><strong>Pagamentos</strong><small>Organize pagos e pendentes</small></div></Link>
+      {auth.role === "organizer" && <Link href="/app/pagamentos"><span><CircleDollarSign /></span><div><strong>Pagamentos</strong><small>Organize pagos e pendentes</small></div></Link>}
+      <Link href="/mesa-tatica"><span><Goal /></span><div><strong>Mesa Tática</strong><small>Crie, anime e exporte jogadas</small></div></Link>
       <Link href="/aparencia"><span><Palette /></span><div><strong>Aparência</strong><small>Tema, densidade e animações</small></div></Link>
       <button onClick={() => window.print()}><span><Printer /></span><div><strong>Imprimir / PDF</strong><small>Salve a tela atual em PDF</small></div></button>
-      {auth.role === "organizer" && <button onClick={importHistory} disabled={importing}><span>{importing ? <LoaderCircle className="spin" /> : <DatabaseZap />}</span><div><strong>{importing ? "Importando…" : "Importar site antigo"}</strong><small>Trazer jogadores e histórico sem duplicar</small></div></button>}
-      {auth.role === "organizer" && <button onClick={backup}><span><Download /></span><div><strong>Exportar backup</strong><small>Baixar dados atuais em JSON</small></div></button>}
+      {auth.role === "organizer" && <button onClick={() => fileInput.current?.click()} disabled={importing}><span>{importing ? <LoaderCircle className="spin" /> : <FileUp />}</span><div><strong>{importing ? "Importando…" : "Importar backup"}</strong><small>Validar, revisar e mesclar um JSON</small></div></button>}
+      {auth.role === "organizer" && <button onClick={backup} disabled={exporting}><span>{exporting ? <LoaderCircle className="spin" /> : <Download />}</span><div><strong>{exporting ? "Exportando…" : "Exportar backup"}</strong><small>Baixar todos os dados, sem segredos</small></div></button>}
       <button className="logout-item" onClick={async () => { await auth.logout(); router.replace("/"); }}><span><LogOut /></span><div><strong>Sair / trocar acesso</strong><small>Voltar para a tela inicial</small></div></button>
     </div>
+    <input ref={fileInput} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); }} />
     {(message || error) && <p className={`message ${error ? "error" : "success"}`} role={error ? "alert" : "status"}>{error || message}</p>}
   </>;
 }

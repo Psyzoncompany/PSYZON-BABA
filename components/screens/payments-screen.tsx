@@ -1,50 +1,33 @@
 "use client";
 
-import { useState } from "react";
-import { CheckCircle2, CircleDollarSign, Clock3, LoaderCircle, ReceiptText } from "lucide-react";
+import { useMemo, useState } from "react";
+import { CheckCircle2, CircleDollarSign, Clock3, Download, LoaderCircle, Plus, Search, UserX } from "lucide-react";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useBaba } from "@/components/providers/baba-provider";
-import { monthlyPriceCents, paymentSummary } from "@/lib/domain/payments";
+import { monthKey, monthlyPriceCents, paymentSummary } from "@/lib/domain/payments";
+import type { PlayerStatus, PlayerType } from "@/lib/domain/types";
 import { EmptyState, ScreenHeading, StatCard } from "@/components/ui/screen";
 
 const money = (cents: number) => (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+type PaymentFilter = "all" | "paid" | "pending" | "novato" | "desativado";
 
 export function PaymentsScreen() {
-  const { role } = useAuth();
-  const baba = useBaba();
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState("");
-  const summary = paymentSummary(baba.players);
-  const billable = baba.players.filter((player) => monthlyPriceCents(player) > 0).sort((left, right) => Number(left.paid) - Number(right.paid) || left.name.localeCompare(right.name, "pt-BR"));
+  const auth = useAuth(); const baba = useBaba(); const [busyId, setBusyId] = useState<string | null>(null); const [error, setError] = useState(""); const [message, setMessage] = useState(""); const [search, setSearch] = useState(""); const [filter, setFilter] = useState<PaymentFilter>("all"); const [name, setName] = useState(""); const [type, setType] = useState<PlayerType>("linha"); const [exporting, setExporting] = useState(false);
+  const period = monthKey(); const paymentById = useMemo(() => new Map(baba.payments.map((payment) => [payment.playerId, payment])), [baba.payments]); const summary = paymentSummary(baba.players, baba.payments); const monthLabel = new Date(`${period}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  const players = baba.players.filter((player) => player.status !== "convidado").filter((player) => player.name.toLocaleLowerCase("pt-BR").includes(search.toLocaleLowerCase("pt-BR"))).filter((player) => { const status = !player.active || player.status === "desativado" ? "desativado" : player.status === "novato" ? "novato" : paymentById.get(player.id)?.status === "paid" ? "paid" : "pending"; return filter === "all" || status === filter; }).sort((a, b) => Number(b.active) - Number(a.active) || Number(paymentById.get(a.id)?.status === "paid") - Number(paymentById.get(b.id)?.status === "paid") || a.name.localeCompare(b.name, "pt-BR"));
 
-  const toggle = async (playerId: string) => {
-    setError("");
-    setBusyId(playerId);
-    try {
-      await baba.togglePayment(playerId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Não foi possível atualizar o pagamento.");
-    } finally {
-      setBusyId(null);
-    }
-  };
+  const run = async (key: string, operation: () => Promise<void>, success: string) => { setBusyId(key); setError(""); setMessage(""); try { await operation(); setMessage(success); } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível salvar."); } finally { setBusyId(null); } };
+  const exportPdf = async () => { setExporting(true); setError(""); try { const token = await auth.organizerToken(); const response = await fetch("/api/reports/payments", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ monthKey: period }) }); if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Não foi possível gerar o PDF."); const href = URL.createObjectURL(await response.blob()); const anchor = document.createElement("a"); anchor.href = href; anchor.download = `pagamentos-${period}.pdf`; anchor.click(); URL.revokeObjectURL(href); } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível gerar o PDF."); } finally { setExporting(false); } };
+
+  if (auth.role !== "organizer") return <><ScreenHeading eyebrow="Financeiro" title="Área restrita" description="Pagamentos são visíveis somente para o organizador e a comissão autorizada." /><EmptyState icon={<CircleDollarSign />} title="Sem acesso aos pagamentos" text="Seu código de jogador continua válido para acompanhar times, placares e rankings." /></>;
 
   return <>
-    <ScreenHeading eyebrow="Financeiro" title="Pagamentos do mês" description="Controle mensalistas, goleiros e pendências em uma única lista." />
-    <div className="stat-grid payment-summary"><StatCard label="Previsto" value={money(summary.expectedCents)} note={`${billable.length} mensalistas`} /><StatCard label="Recebido" value={money(summary.paidCents)} note={`${summary.paidCount} pagos`} /><StatCard label="Pendente" value={money(summary.expectedCents - summary.paidCents)} note={`${summary.pendingCount} pendentes`} /></div>
-    {!billable.length ? <EmptyState icon={<ReceiptText />} title="Nenhuma cobrança neste mês" text="Cadastre jogadores regulares para organizar os pagamentos." /> : <section className="card payments-card">
-      <div className="card-title-row"><div><h2>Mensalistas</h2><p>Vencimento dia 10 · Linha R$ 15 · Goleiro R$ 7</p></div><CircleDollarSign /></div>
-      <div className="payments-table">{billable.map((player) => {
-        const busy = busyId === player.id;
-        return <button key={player.id} className={player.paid ? "is-paid" : ""} disabled={role !== "organizer" || busyId !== null} onClick={() => toggle(player.id)}>
-          <span className="avatar">{player.name.slice(0, 2).toUpperCase()}</span>
-          <span className="payment-person"><strong>{player.name}</strong><small>{player.type === "goleiro" ? "Goleiro" : "Linha"}</small></span>
-          <strong>{money(monthlyPriceCents(player))}</strong>
-          <span className={`payment-state ${player.paid ? "paid" : "pending"}`}>{busy ? <LoaderCircle className="spin" /> : player.paid ? <CheckCircle2 /> : <Clock3 />}{player.paid ? "Pago" : "Pendente"}</span>
-        </button>;
-      })}</div>
-      {role !== "organizer" && <p className="inline-empty">Somente o organizador pode alterar os pagamentos.</p>}
-    </section>}
-    {error && <p className="message error" role="alert">{error}</p>}
+    <ScreenHeading eyebrow="Cadastrar jogadores · Financeiro" title="Jogadores e pagamentos" description={`Mensal dia 10 · Jogador R$ 15 · Goleiro R$ 7 · ${monthLabel}.`} action={<button className="button secondary" onClick={() => void exportPdf()} disabled={exporting}><Download /> {exporting ? "Gerando…" : "Exportar PDF"}</button>} />
+    <div className="stat-grid payment-summary"><StatCard label="Esperado" value={money(summary.expectedCents)} note={`${summary.paidCount + summary.pendingCount} jogadores · ${monthLabel}`} /><StatCard label="Pago" value={money(summary.paidCents)} note={`${summary.paidCount} confirmados`} /><StatCard label="Vence dia 10" value={money(summary.expectedCents - summary.paidCents)} note={`${summary.pendingCount} faltando · 10/${period.slice(5)}/${period.slice(0, 4)}`} /></div>
+    <section className="card player-register"><div className="card-title-row"><div><h2>Cadastrar jogador</h2><p>O cadastro rápido pede somente nome e tipo.</p></div><Plus /></div><form className="quick-form" onSubmit={(event) => { event.preventDefault(); if (!name.trim()) return; void run("new", () => baba.addPlayer(name, type), `${name.trim()} cadastrado.`).then(() => setName("")); }}><input aria-label="Nome do jogador" placeholder="Nome do jogador" maxLength={80} value={name} onChange={(event) => setName(event.target.value)} /><select aria-label="Tipo do jogador" value={type} onChange={(event) => setType(event.target.value as PlayerType)}><option value="linha">Jogador de linha</option><option value="goleiro">Goleiro</option></select><button className="button primary" disabled={!name.trim() || Boolean(busyId)} aria-label="Cadastrar jogador">{busyId === "new" ? <LoaderCircle className="spin" /> : <Plus />}</button></form></section>
+    <section className="card player-directory"><div className="directory-heading"><div><h2>Jogadores do baba</h2><p>{baba.players.length} jogadores cadastrados</p></div><label className="search-field"><Search /><input placeholder="Pesquisar por nome" value={search} onChange={(event) => setSearch(event.target.value)} /></label><select aria-label="Filtrar pagamento e situação" value={filter} onChange={(event) => setFilter(event.target.value as PaymentFilter)}><option value="all">Situação: todos</option><option value="paid">Pago</option><option value="pending">Não pagou</option><option value="novato">Novato</option><option value="desativado">Desativado</option></select></div>
+      {!players.length ? <EmptyState icon={<CircleDollarSign />} title="Nenhum jogador neste filtro" text="Ajuste a busca ou cadastre uma nova pessoa." /> : <div className="player-management-list">{players.map((player) => { const payment = paymentById.get(player.id); const amount = monthlyPriceCents(player); const isDisabled = !player.active || player.status === "desativado"; const isNovice = player.status === "novato"; const paid = payment?.status === "paid"; const label = isDisabled ? "Desativado" : isNovice ? "Novato" : paid ? "Pago" : "Não pagou"; return <article key={player.id} className={isDisabled ? "disabled-player" : paid ? "paid-player" : ""}><span className="avatar">{player.name.slice(0, 2).toUpperCase()}</span><div className="managed-identity"><strong>{player.name}</strong><small>{player.type === "goleiro" ? "Goleiro" : "Jogador"} · {money(amount)}</small></div><span className={`payment-state ${paid ? "paid" : label === "Não pagou" ? "pending" : "neutral"}`}>{paid ? <CheckCircle2 /> : <Clock3 />}{label}</span><button className={`button ${paid ? "secondary" : "primary"}`} disabled={isDisabled || isNovice || Boolean(busyId)} onClick={() => run(player.id, () => baba.togglePayment(player.id), paid ? `Pagamento de ${player.name} marcado como pendente.` : `Pagamento de ${player.name} confirmado.`)}>{busyId === player.id ? <LoaderCircle className="spin" /> : paid ? "Pagamento pendente" : "Pagamento pago"}</button><label className="managed-select"><span>Definir jogador</span><select value={isDisabled ? "desativado" : player.status} disabled={Boolean(busyId)} onChange={(event) => { const status = event.target.value as PlayerStatus; void run(`status-${player.id}`, () => baba.updatePlayer(player.id, { status, active: status !== "desativado" }), `${player.name} atualizado.`); }}><option value="regular">Regular</option><option value="novato">Novato</option><option value="desativado">Desativado</option></select></label><button className="icon-button danger" aria-label={`Desativar ${player.name}`} disabled={isDisabled || Boolean(busyId)} onClick={() => { if (window.confirm(`Desativar ${player.name}? O histórico será preservado.`)) void run(`disable-${player.id}`, () => baba.updatePlayer(player.id, { status: "desativado", active: false, present: false }), `${player.name} desativado sem apagar o histórico.`); }}><UserX /></button></article>; })}</div>}
+    </section>
+    {(error || message) && <p className={`message ${error ? "error" : "success"}`} aria-live="polite">{error || message}</p>}
   </>;
 }

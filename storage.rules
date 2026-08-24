@@ -1,18 +1,33 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    function isOrganizer(accountId) {
+      return request.auth != null
+        && request.auth.uid == accountId
+        && (!request.auth.token.keys().hasAny(['role']) || request.auth.token.role != 'viewer');
+    }
+
+    function isViewer(accountId) {
+      return request.auth != null
+        && request.auth.token.role == 'viewer'
+        && request.auth.token.accountId == accountId
+        && request.auth.token.accessVersion is int
+        && request.auth.token.sessionExpiresAt is int
+        && request.time.toMillis() < request.auth.token.sessionExpiresAt
+        && firestore.exists(/databases/(default)/documents/baba_accounts/$(accountId)/meta/security)
+        && firestore.get(/databases/(default)/documents/baba_accounts/$(accountId)/meta/security).data.viewerAccessVersion == request.auth.token.accessVersion;
+    }
+
     match /baba_accounts/{accountId}/{allPaths=**} {
-      allow read: if true;
-      allow create, update: if request.auth != null && request.auth.uid == accountId
+      allow read: if isOrganizer(accountId) || isViewer(accountId);
+      allow create, update: if isOrganizer(accountId)
         && request.resource.size < 2 * 1024 * 1024
         && request.resource.contentType.matches('image/(png|jpeg|webp)');
       allow delete: if false;
     }
-    match /baba/purchase-goals/{goalId}/image {
-      allow read: if true;
-      allow write: if request.auth != null
-        && request.resource.size < 2 * 1024 * 1024
-        && request.resource.contentType.matches('image/(png|jpeg|webp)');
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

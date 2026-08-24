@@ -1,6 +1,7 @@
 export type PlayerType = "linha" | "goleiro";
 export type PlayerStatus = "regular" | "novato" | "convidado" | "desativado";
-export type MatchMode = "manual";
+export type MatchMode = "online" | "manual";
+export type BabaStatus = "open" | "drawn" | "prepared" | "playing" | "tie_break_pending" | "finished";
 
 export interface Player {
   id: string;
@@ -44,6 +45,12 @@ export interface GoalEvent {
   createdAtMs: number;
 }
 
+export interface RosterPlayerSnapshot {
+  id: string;
+  name: string;
+  type: PlayerType;
+}
+
 export interface Game {
   id: string;
   sequence: number;
@@ -53,6 +60,8 @@ export interface Game {
   teamBName: string;
   rosterA: string[];
   rosterB: string[];
+  rosterASnapshot?: RosterPlayerSnapshot[];
+  rosterBSnapshot?: RosterPlayerSnapshot[];
   scoreA: number;
   scoreB: number;
   status: "prepared" | "running" | "paused" | "finished";
@@ -65,17 +74,27 @@ export interface Game {
   updatedAtMs: number;
 }
 
+export interface PendingTieBreak {
+  kind: "random" | "manual_odd_even";
+  teamAId: string;
+  teamBId: string;
+  incomingTeamId?: string;
+}
+
 export interface Baba {
   id: string;
   dateKey: string;
-  status: "open" | "drawn" | "playing" | "finished";
+  status: BabaStatus;
   matchMode: MatchMode;
+  modeLocked?: boolean;
   currentGameId: string | null;
   queue: string[];
+  pendingTieBreak?: PendingTieBreak | null;
   drawBatchCount: number;
   championTeamIds: string[];
   createdAtMs: number;
   finishedAtMs: number | null;
+  deletedAtMs?: number | null;
   updatedAtMs: number;
 }
 
@@ -89,4 +108,31 @@ export interface RankingRow {
   goals: number;
   points: number;
   efficiency: number;
+  babas?: number;
+  titles?: number;
+  mvps?: number;
+  yellowCards?: number;
+  redCards?: number;
+  goalsAgainst?: number;
+  cleanGames?: number;
+  playerType?: PlayerType;
+}
+
+export interface MonthlyPayment {
+  playerId: string;
+  monthKey: string;
+  status: "paid" | "pending" | "exempt";
+  amountCents: number;
+  dueDateKey: string;
+  updatedAtMs: number;
+  updatedBy: string;
+}
+
+export interface ManualTeamResult {
+  teamId: string;
+  wins: number;
+  draws: number;
+  losses: number;
+  goalsByPlayer: Record<string, number>;
+  updatedAtMs: number;
 }

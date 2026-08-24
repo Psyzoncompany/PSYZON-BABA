@@ -2,27 +2,33 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
-  collection, doc, getDoc, onSnapshot, runTransaction, setDoc, updateDoc, writeBatch,
+  collection, doc, onSnapshot, runTransaction, setDoc, updateDoc, writeBatch,
   type DocumentData, type Unsubscribe,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/client";
 import { useAuth } from "./auth-provider";
-import { championIds, nextRotation } from "@/lib/domain/competition";
+import { buildManualRanking, buildRanking, championIds, nextRotation, resolveManualDraw, resolveRandomDraw, teamFromManualResult } from "@/lib/domain/competition";
 import { drawTeams } from "@/lib/domain/draw";
 import { normalizeBabaStatus } from "@/lib/domain/legacy";
-import type { Baba, Game, Player, Team } from "@/lib/domain/types";
+import { createMonthlyPayment, monthKey, monthlyPriceCents } from "@/lib/domain/payments";
+import { getTeamTheme } from "@/lib/domain/team-theme";
+import type { Baba, Game, ManualTeamResult, MatchMode, MonthlyPayment, Player, RankingRow, Team } from "@/lib/domain/types";
 
 export type SyncStatus = "connecting" | "saving" | "online" | "offline" | "pending";
 
 interface BabaValue {
   loading: boolean; syncStatus: SyncStatus; players: Player[]; teams: Team[]; games: Game[]; babas: Baba[]; activeBaba: Baba | null;
+  payments: MonthlyPayment[]; manualResults: ManualTeamResult[]; generalRanking: RankingRow[]; monthlyRanking: RankingRow[];
   addPlayer(name: string, type: Player["type"]): Promise<void>;
   updatePlayer(id: string, patch: Partial<Player>): Promise<void>;
   togglePresence(id: string): Promise<void>; togglePayment(id: string): Promise<void>;
-  createBaba(dateKey: string): Promise<void>; draw(): Promise<void>;
+  createBaba(dateKey: string): Promise<void>; setMatchMode(mode: MatchMode): Promise<void>; draw(): Promise<void>; drawLateArrivals(playerIds: string[]): Promise<void>;
+  createEmptyTeams(count: number): Promise<void>; movePlayer(playerId: string, teamId: string | null): Promise<void>;
+  saveManualResult(result: ManualTeamResult): Promise<void>;
   prepareGame(teamAId?: string, teamBId?: string): Promise<void>; startOrPauseGame(): Promise<void>;
   addGoal(teamId: string, playerId: string | null): Promise<void>; undoGoal(): Promise<void>; finishGame(): Promise<void>;
-  finishBaba(): Promise<void>; generateViewerCode(): Promise<string>; resetActiveBaba(): Promise<void>;
+  resolveTieBreak(winnerId?: string): Promise<void>; undoLastGame(): Promise<void>;
+  finishBaba(): Promise<void>; generateViewerCode(): Promise<string>; getViewerCode(): Promise<string | null>; revokeViewerCode(): Promise<void>; resetActiveBaba(): Promise<void>;
 }
 
 const BabaContext = createContext<BabaValue | null>(null);
@@ -59,10 +65,12 @@ function mapBaba(id: string, data: DocumentData): Baba {
       : [];
   return {
     id, dateKey: String(data.dateKey || data.dataISO || new Date().toISOString().slice(0, 10)), status,
-    matchMode: "manual", currentGameId: data.currentGameId || null,
+    matchMode: data.matchMode === "manual" ? "manual" : "online", modeLocked: Boolean(data.modeLocked), currentGameId: data.currentGameId || null,
     queue: Array.isArray(data.queue) ? data.queue : Array.isArray(data.currentQueue) ? data.currentQueue : [],
+    pendingTieBreak: data.pendingTieBreak && typeof data.pendingTieBreak === "object" ? data.pendingTieBreak : null,
     drawBatchCount: Number(data.drawBatchCount || 0), championTeamIds,
-    createdAtMs: Number(data.createdAtMs || data.criadoEm || 0), finishedAtMs: Number(data.finishedAtMs || data.finalizadoEm || 0) || null, updatedAtMs: Number(data.updatedAtMs || 0),
+    createdAtMs: Number(data.createdAtMs || data.criadoEm || 0), finishedAtMs: Number(data.finishedAtMs || data.finalizadoEm || 0) || null,
+    deletedAtMs: Number(data.deletedAtMs || (data.deleted ? data.updatedAtMs : 0)) || null, updatedAtMs: Number(data.updatedAtMs || 0),
   };
 }
 
@@ -77,9 +85,61 @@ function mapGame(id: string, data: DocumentData): Game {
   };
 }
 
+function mapPayment(id: string, data: DocumentData): MonthlyPayment {
+  return {
+    playerId: id,
+    monthKey: String(data.monthKey || ""),
+    status: data.status === "paid" || data.status === "exempt" ? data.status : "pending",
+    amountCents: Number(data.amountCents || 0),
+    dueDateKey: String(data.dueDateKey || ""),
+    updatedAtMs: Number(data.updatedAtMs || 0),
+    updatedBy: String(data.updatedBy || ""),
+  };
+}
+
+function mapManualResult(id: string, data: DocumentData): ManualTeamResult {
+  const goalsByPlayer = data.goalsByPlayer && typeof data.goalsByPlayer === "object" ? data.goalsByPlayer : {};
+  return {
+    teamId: id,
+    wins: Math.max(0, Number(data.wins || 0)),
+    draws: Math.max(0, Number(data.draws || 0)),
+    losses: Math.max(0, Number(data.losses || 0)),
+    goalsByPlayer,
+    updatedAtMs: Number(data.updatedAtMs || 0),
+  };
+}
+
+function mapRanking(id: string, data: DocumentData): RankingRow {
+  const games = Number(data.games || 0);
+  const wins = Number(data.wins || 0);
+  const draws = Number(data.draws || 0);
+  return {
+    playerId: id,
+    name: String(data.name || "Jogador"),
+    playerType: data.playerType === "goleiro" ? "goleiro" : "linha",
+    games,
+    wins,
+    draws,
+    losses: Number(data.losses || 0),
+    goals: Number(data.goals || 0),
+    points: wins * 3 + draws,
+    efficiency: games ? Math.round((((wins * 3 + draws) / (games * 3)) * 100) * 10) / 10 : 0,
+    babas: Number(data.babas || 0),
+    titles: Number(data.titles || 0),
+    mvps: Number(data.mvps || 0),
+    yellowCards: Number(data.yellowCards || 0),
+    redCards: Number(data.redCards || 0),
+    goalsAgainst: Number(data.goalsAgainst || 0),
+    cleanGames: Number(data.cleanGames || 0),
+  };
+}
+
 export function BabaProvider({ children }: { children: React.ReactNode }) {
-  const { accountId, role } = useAuth();
+  const auth = useAuth();
+  const { accountId, role } = auth;
   const [players, setPlayers] = useState<Player[]>([]); const [teams, setTeams] = useState<Team[]>([]); const [games, setGames] = useState<Game[]>([]); const [babas, setBabas] = useState<Baba[]>([]);
+  const [payments, setPayments] = useState<MonthlyPayment[]>([]); const [manualResults, setManualResults] = useState<ManualTeamResult[]>([]);
+  const [generalRanking, setGeneralRanking] = useState<RankingRow[]>([]); const [monthlyRanking, setMonthlyRanking] = useState<RankingRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null); const [loading, setLoading] = useState(true); const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const activeBaba = useMemo(() => babas.find((item) => item.id === activeId) || babas.find((item) => item.status !== "finished") || null, [babas, activeId]);
 
@@ -93,12 +153,12 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Reset tenant-scoped state before attaching listeners for the next account.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPlayers([]); setTeams([]); setGames([]); setBabas([]); setActiveId(null);
+    setPlayers([]); setTeams([]); setGames([]); setBabas([]); setPayments([]); setManualResults([]); setGeneralRanking([]); setMonthlyRanking([]); setActiveId(null);
     if (!accountId) { setLoading(false); return; }
     setLoading(true); setSyncStatus(navigator.onLine ? "connecting" : "offline");
     const unsubs: Unsubscribe[] = [];
     unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "players"), { includeMetadataChanges: true }, (snapshot) => {
-      setPlayers(snapshot.docs.map((item) => mapPlayer(item.id, item.data())).filter((item) => item.active));
+      setPlayers(snapshot.docs.map((item) => mapPlayer(item.id, item.data())).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name, "pt-BR")));
       setSyncStatus(snapshot.metadata.hasPendingWrites ? "pending" : navigator.onLine ? "online" : "offline"); setLoading(false);
     }));
     unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "babas"), (snapshot) => {
@@ -108,17 +168,29 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(onSnapshot(doc(db, "baba_accounts", accountId, "meta", "live"), (snapshot) => {
       if (snapshot.exists()) setActiveId(snapshot.data().activeBabaId || null);
     }));
+    unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "player_stats"), (snapshot) => {
+      setGeneralRanking(snapshot.docs.map((item) => mapRanking(item.id, item.data())));
+    }));
+    unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "months", monthKey(), "rankings"), (snapshot) => {
+      setMonthlyRanking(snapshot.docs.map((item) => mapRanking(item.id, item.data())));
+    }));
+    if (role === "organizer") {
+      unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "payments", monthKey(), "players"), (snapshot) => {
+        setPayments(snapshot.docs.map((item) => mapPayment(item.id, item.data())));
+      }));
+    }
     return () => unsubs.forEach((unsubscribe) => unsubscribe());
-  }, [accountId]);
+  }, [accountId, role]);
 
   useEffect(() => {
     // Avoid rendering the previous baba while the new realtime listeners connect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setTeams([]); setGames([]);
+    setTeams([]); setGames([]); setManualResults([]);
     if (!accountId || !activeBaba?.id) return;
     const unsubTeams = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "teams"), (snapshot) => setTeams(snapshot.docs.map((item) => mapTeam(item.id, item.data())).filter((item) => item.active).sort((a, b) => a.order - b.order)));
     const unsubGames = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "games"), (snapshot) => setGames(snapshot.docs.map((item) => mapGame(item.id, item.data())).sort((a, b) => a.sequence - b.sequence)));
-    return () => { unsubTeams(); unsubGames(); };
+    const unsubManual = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "manual_results"), (snapshot) => setManualResults(snapshot.docs.map((item) => mapManualResult(item.id, item.data()))));
+    return () => { unsubTeams(); unsubGames(); unsubManual(); };
   }, [accountId, activeBaba?.id]);
 
   const owner = useCallback(() => { if (!accountId || role !== "organizer") throw new Error("Apenas o organizador pode alterar dados."); return accountId; }, [accountId, role]);
@@ -126,7 +198,14 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
 
   const addPlayer = useCallback((name: string, type: Player["type"]) => saving(async () => {
     const uid = owner(); const id = crypto.randomUUID(); const timestamp = now();
-    await setDoc(doc(db, "baba_accounts", uid, "players", id), { id, playerId: id, name: name.trim(), nome: name.trim(), type, tipo: type, status: "regular", active: true, ativo: true, present: false, paid: false, schemaVersion: 3, createdAtMs: timestamp, updatedAtMs: timestamp });
+    const normalizedName = name.trim();
+    if (!normalizedName || normalizedName.length > 80) throw new Error("Informe um nome com até 80 caracteres.");
+    const created: Player = { id, name: normalizedName, type, status: "regular", active: true, present: false, paid: false, createdAtMs: timestamp, updatedAtMs: timestamp };
+    const payment = createMonthlyPayment(created, monthKey(), uid, timestamp);
+    const batch = writeBatch(db);
+    batch.set(doc(db, "baba_accounts", uid, "players", id), { ...created, playerId: id, nome: normalizedName, tipo: type, ativo: true, schemaVersion: 3 });
+    batch.set(doc(db, "baba_accounts", uid, "payments", payment.monthKey, "players", id), { ...payment, schemaVersion: 3 });
+    await batch.commit();
   }), [owner, saving]);
 
   const updatePlayer = useCallback((id: string, patch: Partial<Player>) => saving(async () => {
@@ -134,30 +213,114 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
     if (patch.name) normalized.nome = patch.name; if (patch.type) normalized.tipo = patch.type; if (patch.active !== undefined) normalized.ativo = patch.active;
     await updateDoc(doc(db, "baba_accounts", uid, "players", id), normalized);
   }), [owner, saving]);
-  const togglePresence = useCallback(async (id: string) => { const player = players.find((item) => item.id === id); if (player) await updatePlayer(id, { present: !player.present }); }, [players, updatePlayer]);
-  const togglePayment = useCallback(async (id: string) => { const player = players.find((item) => item.id === id); if (player) await updatePlayer(id, { paid: !player.paid }); }, [players, updatePlayer]);
+  const togglePresence = useCallback((id: string) => saving(async () => {
+    const uid = owner(); const player = players.find((item) => item.id === id);
+    if (!player || !player.active) return;
+    const timestamp = now(); const batch = writeBatch(db);
+    batch.update(doc(db, "baba_accounts", uid, "players", id), { present: !player.present, updatedAtMs: timestamp });
+    if (!payments.some((payment) => payment.playerId === id)) {
+      const payment = createMonthlyPayment(player, monthKey(), uid, timestamp);
+      batch.set(doc(db, "baba_accounts", uid, "payments", payment.monthKey, "players", id), { ...payment, schemaVersion: 3 });
+    }
+    await batch.commit();
+  }), [owner, saving, players, payments]);
+
+  const togglePayment = useCallback((id: string) => saving(async () => {
+    const uid = owner(); const player = players.find((item) => item.id === id);
+    if (!player || monthlyPriceCents(player) === 0) throw new Error("Este jogador é isento neste mês.");
+    const current = payments.find((payment) => payment.playerId === id) || createMonthlyPayment(player, monthKey(), uid);
+    const next: MonthlyPayment = { ...current, status: current.status === "paid" ? "pending" : "paid", amountCents: monthlyPriceCents(player), updatedAtMs: now(), updatedBy: uid };
+    await setDoc(doc(db, "baba_accounts", uid, "payments", next.monthKey, "players", id), { ...next, schemaVersion: 3 }, { merge: true });
+  }), [owner, saving, players, payments]);
 
   const createBaba = useCallback((dateKey: string) => saving(async () => {
     const uid = owner(); const id = crypto.randomUUID(); const timestamp = now(); const batch = writeBatch(db);
-    batch.set(doc(db, "baba_accounts", uid, "babas", id), { id, dateKey, dataISO: dateKey, status: "open", matchMode: "manual", currentGameId: null, queue: [], drawBatchCount: 0, championTeamIds: [], schemaVersion: 3, createdAtMs: timestamp, updatedAtMs: timestamp });
+    batch.set(doc(db, "baba_accounts", uid, "babas", id), { id, dateKey, dataISO: dateKey, status: "open", matchMode: "online", modeLocked: false, currentGameId: null, queue: [], pendingTieBreak: null, drawBatchCount: 0, championTeamIds: [], schemaVersion: 3, createdAtMs: timestamp, updatedAtMs: timestamp });
     batch.set(doc(db, "baba_accounts", uid, "meta", "live"), { activeBabaId: id, status: "open", schemaVersion: 3, updatedAtMs: timestamp }, { merge: true });
     await batch.commit(); setActiveId(id);
   }), [owner, saving]);
+
+  const setMatchMode = useCallback((mode: MatchMode) => saving(async () => {
+    const uid = owner();
+    if (!activeBaba) throw new Error("Inicie um baba primeiro.");
+    if (activeBaba.modeLocked || teams.length || games.length) throw new Error("O modo fica bloqueado depois que existem times ou partidas.");
+    await updateDoc(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { matchMode: mode, updatedAtMs: now() });
+  }), [owner, saving, activeBaba, teams.length, games.length]);
 
   const draw = useCallback(() => saving(async () => {
     const uid = owner(); if (!activeBaba) throw new Error("Inicie um baba primeiro.");
     const newTeams = drawTeams(players, { drawBatch: activeBaba.drawBatchCount + 1 }); const batch = writeBatch(db);
     newTeams.forEach((team) => batch.set(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", team.id), team));
-    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { status: "drawn", queue: newTeams.map((team) => team.id), drawBatchCount: activeBaba.drawBatchCount + 1, updatedAtMs: now() });
+    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { status: "drawn", modeLocked: true, queue: newTeams.map((team) => team.id), drawBatchCount: activeBaba.drawBatchCount + 1, updatedAtMs: now() });
     await batch.commit();
   }), [owner, saving, activeBaba, players]);
 
+  const drawLateArrivals = useCallback((playerIds: string[]) => saving(async () => {
+    const uid = owner(); if (!activeBaba || !teams.length) throw new Error("Faça o primeiro sorteio antes de criar um novo lote.");
+    const assigned = new Set(teams.flatMap((team) => team.playerIds));
+    const selected = players.filter((player) => playerIds.includes(player.id) && player.active && player.present && !assigned.has(player.id));
+    if (!selected.length) throw new Error("Selecione quem chegou depois e ainda está sem time.");
+    const nextOrder = Math.max(...teams.map((team) => team.order), 0) + 1;
+    const lateTeams = drawTeams(selected, { lateArrival: true, drawBatch: activeBaba.drawBatchCount + 1, startOrder: nextOrder });
+    const batch = writeBatch(db); const timestamp = now();
+    lateTeams.forEach((team) => batch.set(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", team.id), team));
+    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), {
+      queue: [...activeBaba.queue, ...lateTeams.map((team) => team.id)],
+      drawBatchCount: activeBaba.drawBatchCount + 1,
+      updatedAtMs: timestamp,
+    });
+    await batch.commit();
+  }), [owner, saving, activeBaba, teams, players]);
+
+  const createEmptyTeams = useCallback((count: number) => saving(async () => {
+    const uid = owner(); if (!activeBaba) throw new Error("Inicie um baba primeiro.");
+    if (teams.length || games.length) throw new Error("Os times já foram criados.");
+    if (!Number.isInteger(count) || count < 2 || count > 5) throw new Error("Escolha entre 2 e 5 times.");
+    const timestamp = now(); const created = Array.from({ length: count }, (_, index) => {
+      const order = index + 1; const theme = getTeamTheme(order);
+      return { id: crypto.randomUUID(), name: `Time ${order}`, color: theme.color, order, playerIds: [], drawBatch: 1, lateArrival: false, active: true, stats: { wins: 0, draws: 0, losses: 0, goalsFor: 0, goalsAgainst: 0 }, updatedAtMs: timestamp } satisfies Team;
+    });
+    const batch = writeBatch(db); created.forEach((team) => batch.set(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", team.id), team));
+    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { status: "drawn", modeLocked: true, queue: created.map((team) => team.id), drawBatchCount: 1, updatedAtMs: timestamp });
+    await batch.commit();
+  }), [owner, saving, activeBaba, teams.length, games.length]);
+
+  const movePlayer = useCallback((playerId: string, teamId: string | null) => saving(async () => {
+    const uid = owner(); if (!activeBaba) throw new Error("Nenhum baba em andamento.");
+    const player = players.find((item) => item.id === playerId); if (!player) throw new Error("Jogador não encontrado.");
+    if (teamId && !teams.some((team) => team.id === teamId)) throw new Error("Time de destino não encontrado.");
+    const timestamp = now(); const batch = writeBatch(db);
+    teams.forEach((team) => {
+      const without = team.playerIds.filter((id) => id !== playerId);
+      const nextIds = team.id === teamId ? [...without, playerId] : without;
+      if (nextIds.length !== team.playerIds.length || team.id === teamId) {
+        batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", team.id), { playerIds: nextIds, updatedAtMs: timestamp });
+      }
+    });
+    await batch.commit();
+  }), [owner, saving, activeBaba, players, teams]);
+
+  const saveManualResult = useCallback((result: ManualTeamResult) => saving(async () => {
+    const uid = owner(); if (!activeBaba || activeBaba.matchMode !== "manual") throw new Error("Este baba não está no modo manual.");
+    const team = teams.find((item) => item.id === result.teamId); if (!team) throw new Error("Time não encontrado.");
+    const integers = [result.wins, result.draws, result.losses, ...Object.values(result.goalsByPlayer)];
+    if (integers.some((value) => !Number.isInteger(value) || value < 0 || value > 999)) throw new Error("Use somente números inteiros positivos.");
+    if (Object.keys(result.goalsByPlayer).some((playerId) => !team.playerIds.includes(playerId))) throw new Error("Há um artilheiro fora do elenco deste time.");
+    const timestamp = now(); const normalized = { ...result, updatedAtMs: timestamp };
+    const updatedTeam = teamFromManualResult(team, normalized); const batch = writeBatch(db);
+    batch.set(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "manual_results", team.id), { ...normalized, schemaVersion: 3 });
+    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", team.id), { stats: updatedTeam.stats, updatedAtMs: timestamp });
+    await batch.commit();
+  }), [owner, saving, activeBaba, teams]);
+
   const prepareGame = useCallback((teamAId?: string, teamBId?: string) => saving(async () => {
     const uid = owner(); if (!activeBaba) throw new Error("Nenhum baba em andamento.");
+    if (activeBaba.matchMode !== "online") throw new Error("No modo manual, informe os totais finais em vez de criar partidas.");
+    if (activeBaba.pendingTieBreak) throw new Error("Resolva o desempate antes de preparar a próxima partida.");
     const ids = [teamAId, teamBId].filter(Boolean) as string[]; const queue = ids.length === 2 ? ids : activeBaba.queue.length >= 2 ? activeBaba.queue : teams.map((team) => team.id);
     const teamA = teams.find((team) => team.id === queue[0]); const teamB = teams.find((team) => team.id === queue[1]); if (!teamA || !teamB) throw new Error("São necessários dois times.");
     const id = crypto.randomUUID(); const timestamp = now(); const game: Game = { id, sequence: games.length + 1, teamAId: teamA.id, teamBId: teamB.id, teamAName: teamA.name, teamBName: teamB.name, rosterA: [...teamA.playerIds], rosterB: [...teamB.playerIds], scoreA: 0, scoreB: 0, status: "prepared", durationSeconds: 480, timerStartedAtMs: null, timerRemainingSeconds: 480, goalEvents: [], createdAtMs: timestamp, finishedAtMs: null, updatedAtMs: timestamp };
-    const batch = writeBatch(db); batch.set(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", id), game); batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { currentGameId: id, status: "playing", queue: [teamA.id, teamB.id, ...queue.filter((item) => item !== teamA.id && item !== teamB.id)], updatedAtMs: timestamp }); await batch.commit();
+    const batch = writeBatch(db); batch.set(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", id), game); batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { currentGameId: id, status: "playing", modeLocked: true, queue: [teamA.id, teamB.id, ...queue.filter((item) => item !== teamA.id && item !== teamB.id)], updatedAtMs: timestamp }); await batch.commit();
   }), [owner, saving, activeBaba, teams, games.length]);
 
   const currentGame = games.find((game) => game.id === activeBaba?.currentGameId) || [...games].reverse().find((game) => game.status !== "finished");
@@ -171,37 +334,164 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
 
   const addGoal = useCallback((teamId: string, playerId: string | null) => saving(async () => {
     const uid = owner(); if (!activeBaba || !currentGame) throw new Error("Nenhuma partida ativa."); const player = players.find((item) => item.id === playerId); const timestamp = now();
-    await runTransaction(db, async (transaction) => { const ref = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", currentGame.id); const snap = await transaction.get(ref); const game = mapGame(snap.id, snap.data() || {}); const event = { id: crypto.randomUUID(), playerId, playerNameSnapshot: player?.name || "Sem artilheiro", teamId, minute: Math.max(0, Math.floor((game.durationSeconds - game.timerRemainingSeconds) / 60)), createdAtMs: timestamp }; transaction.update(ref, { scoreA: game.scoreA + (teamId === game.teamAId ? 1 : 0), scoreB: game.scoreB + (teamId === game.teamBId ? 1 : 0), goalEvents: [...game.goalEvents, event], updatedAtMs: timestamp }); });
+    await runTransaction(db, async (transaction) => {
+      const ref = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", currentGame.id); const snap = await transaction.get(ref); const game = mapGame(snap.id, snap.data() || {});
+      if (game.status !== "running" && game.status !== "paused") throw new Error("Inicie o jogo antes de marcar gols.");
+      if (teamId !== game.teamAId && teamId !== game.teamBId) throw new Error("Time inválido para esta partida.");
+      const roster = teamId === game.teamAId ? game.rosterA : game.rosterB;
+      if (playerId && !roster.includes(playerId)) throw new Error("O autor do gol não pertence ao elenco congelado deste time.");
+      const elapsedSinceResume = game.status === "running" && game.timerStartedAtMs ? Math.floor((timestamp - game.timerStartedAtMs) / 1000) : 0;
+      const remaining = Math.max(0, game.timerRemainingSeconds - elapsedSinceResume);
+      const event = { id: crypto.randomUUID(), playerId, playerNameSnapshot: player?.name || "Sem artilheiro", teamId, minute: Math.max(0, Math.floor((game.durationSeconds - remaining) / 60)), createdAtMs: timestamp };
+      transaction.update(ref, { scoreA: game.scoreA + Number(teamId === game.teamAId), scoreB: game.scoreB + Number(teamId === game.teamBId), goalEvents: [...game.goalEvents, event], updatedAtMs: timestamp });
+    });
   }), [owner, saving, activeBaba, currentGame, players]);
 
   const undoGoal = useCallback(() => saving(async () => {
-    const uid = owner(); if (!activeBaba || !currentGame?.goalEvents.length) throw new Error("Nenhum gol para desfazer."); const last = currentGame.goalEvents.at(-1)!;
-    await updateDoc(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", currentGame.id), { scoreA: Math.max(0, currentGame.scoreA - (last.teamId === currentGame.teamAId ? 1 : 0)), scoreB: Math.max(0, currentGame.scoreB - (last.teamId === currentGame.teamBId ? 1 : 0)), goalEvents: currentGame.goalEvents.slice(0, -1), updatedAtMs: now() });
+    const uid = owner(); if (!activeBaba || !currentGame) throw new Error("Nenhum gol para desfazer.");
+    await runTransaction(db, async (transaction) => { const ref = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", currentGame.id); const snapshot = await transaction.get(ref); const stored = mapGame(snapshot.id, snapshot.data() || {}); const last = stored.goalEvents.at(-1); if (!last || stored.status === "finished") throw new Error("Nenhum gol ativo para desfazer."); transaction.update(ref, { scoreA: Math.max(0, stored.scoreA - Number(last.teamId === stored.teamAId)), scoreB: Math.max(0, stored.scoreB - Number(last.teamId === stored.teamBId)), goalEvents: stored.goalEvents.slice(0, -1), updatedAtMs: now() }); });
   }), [owner, saving, activeBaba, currentGame]);
 
   const finishGame = useCallback(() => saving(async () => {
-    const uid = owner(); if (!activeBaba || !currentGame) throw new Error("Nenhuma partida ativa."); const teamA = teams.find((team) => team.id === currentGame.teamAId)!; const teamB = teams.find((team) => team.id === currentGame.teamBId)!; const rotation = nextRotation(teamA.id, teamB.id, activeBaba.queue, currentGame.scoreA, currentGame.scoreB); const timestamp = now(); const batch = writeBatch(db);
-    const updateStats = (team: Team, own: number, against: number) => ({ ...team.stats, wins: team.stats.wins + (own > against ? 1 : 0), draws: team.stats.draws + (own === against ? 1 : 0), losses: team.stats.losses + (own < against ? 1 : 0), goalsFor: team.stats.goalsFor + own, goalsAgainst: team.stats.goalsAgainst + against });
-    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", currentGame.id), { status: "finished", timerStartedAtMs: null, finishedAtMs: timestamp, updatedAtMs: timestamp });
-    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", teamA.id), { stats: updateStats(teamA, currentGame.scoreA, currentGame.scoreB), updatedAtMs: timestamp });
-    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", teamB.id), { stats: updateStats(teamB, currentGame.scoreB, currentGame.scoreA), updatedAtMs: timestamp });
-    batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { currentGameId: null, queue: [...rotation.court, ...rotation.queue], updatedAtMs: timestamp }); await batch.commit();
-  }), [owner, saving, activeBaba, currentGame, teams]);
+    const uid = owner(); if (!activeBaba || !currentGame) throw new Error("Nenhuma partida ativa.");
+    const babaRef = doc(db, "baba_accounts", uid, "babas", activeBaba.id); const gameRef = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", currentGame.id);
+    await runTransaction(db, async (transaction) => {
+      const [gameSnapshot, babaSnapshot] = await Promise.all([transaction.get(gameRef), transaction.get(babaRef)]);
+      if (!gameSnapshot.exists() || !babaSnapshot.exists()) throw new Error("Partida não encontrada.");
+      const storedGame = mapGame(gameSnapshot.id, gameSnapshot.data()); if (storedGame.status === "finished") return;
+      const storedBaba = mapBaba(babaSnapshot.id, babaSnapshot.data());
+      const teamARef = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", storedGame.teamAId); const teamBRef = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", storedGame.teamBId);
+      const [teamASnapshot, teamBSnapshot] = await Promise.all([transaction.get(teamARef), transaction.get(teamBRef)]);
+      if (!teamASnapshot.exists() || !teamBSnapshot.exists()) throw new Error("Os times desta partida não foram encontrados.");
+      const teamA = mapTeam(teamASnapshot.id, teamASnapshot.data()); const teamB = mapTeam(teamBSnapshot.id, teamBSnapshot.data());
+      const rotation = nextRotation(teamA.id, teamB.id, storedBaba.queue, storedGame.scoreA, storedGame.scoreB); const timestamp = now();
+      const updateStats = (team: Team, own: number, against: number) => ({ ...team.stats, wins: team.stats.wins + Number(own > against), draws: team.stats.draws + Number(own === against), losses: team.stats.losses + Number(own < against), goalsFor: team.stats.goalsFor + own, goalsAgainst: team.stats.goalsAgainst + against });
+      transaction.set(doc(db, "baba_accounts", uid, "babas", activeBaba.id, "undo_snapshots", storedGame.id), { id: storedGame.id, sequence: storedGame.sequence, game: storedGame, teamAStats: teamA.stats, teamBStats: teamB.stats, queue: storedBaba.queue, createdAtMs: timestamp, schemaVersion: 3 });
+      transaction.update(gameRef, { status: "finished", timerStartedAtMs: null, finishedAtMs: timestamp, updatedAtMs: timestamp });
+      transaction.update(teamARef, { stats: updateStats(teamA, storedGame.scoreA, storedGame.scoreB), updatedAtMs: timestamp });
+      transaction.update(teamBRef, { stats: updateStats(teamB, storedGame.scoreB, storedGame.scoreA), updatedAtMs: timestamp });
+      const babaUpdate = rotation.kind === "ready"
+        ? { currentGameId: null, status: "playing", pendingTieBreak: null, queue: [...rotation.court, ...rotation.queue], updatedAtMs: timestamp }
+        : { currentGameId: null, status: "tie_break_pending", pendingTieBreak: rotation.kind === "random_required" ? { kind: "random", teamAId: rotation.tiedTeams[0], teamBId: rotation.tiedTeams[1] } : { kind: "manual_odd_even", teamAId: rotation.tiedTeams[0], teamBId: rotation.tiedTeams[1], incomingTeamId: rotation.incomingTeamId }, updatedAtMs: timestamp };
+      transaction.update(babaRef, babaUpdate);
+    });
+  }), [owner, saving, activeBaba, currentGame]);
+
+  const resolveTieBreak = useCallback((winnerId?: string) => saving(async () => {
+    const uid = owner();
+    if (!activeBaba?.pendingTieBreak) throw new Error("Não há desempate pendente.");
+    const pending = activeBaba.pendingTieBreak;
+    const rotation = pending.kind === "random"
+      ? resolveRandomDraw(pending.teamAId, pending.teamBId, () => {
+          const value = new Uint32Array(1); crypto.getRandomValues(value); return value[0] / 0x1_0000_0000;
+        })
+      : resolveManualDraw(winnerId || "", pending.teamAId, pending.teamBId, pending.incomingTeamId || "");
+    if (rotation.kind !== "ready") throw new Error("Não foi possível concluir o desempate.");
+    await updateDoc(doc(db, "baba_accounts", uid, "babas", activeBaba.id), {
+      status: "playing",
+      pendingTieBreak: null,
+      queue: [...rotation.court, ...rotation.queue],
+      updatedAtMs: now(),
+    });
+  }), [owner, saving, activeBaba]);
+
+  const undoLastGame = useCallback(() => saving(async () => {
+    const uid = owner(); if (!activeBaba) throw new Error("Nenhum baba em andamento.");
+    if (currentGame && currentGame.status !== "finished") throw new Error("Há uma partida preparada ou em andamento.");
+    const last = [...games].reverse().find((game) => game.status === "finished"); if (!last) throw new Error("Nenhum jogo finalizado para desfazer.");
+    const snapshotRef = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "undo_snapshots", last.id); const gameRef = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "games", last.id); const babaRef = doc(db, "baba_accounts", uid, "babas", activeBaba.id);
+    await runTransaction(db, async (transaction) => {
+      const [snapshot, gameSnapshot] = await Promise.all([transaction.get(snapshotRef), transaction.get(gameRef)]); const data = snapshot.data();
+      if (!snapshot.exists() || !gameSnapshot.exists() || !data?.game) throw new Error("Snapshot de desfazer não encontrado.");
+      const stored = mapGame(gameSnapshot.id, gameSnapshot.data()); if (stored.status !== "finished") throw new Error("Este jogo já foi desfeito.");
+      const teamARef = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", stored.teamAId); const teamBRef = doc(db, "baba_accounts", uid, "babas", activeBaba.id, "teams", stored.teamBId);
+      transaction.update(teamARef, { stats: data.teamAStats, updatedAtMs: now() }); transaction.update(teamBRef, { stats: data.teamBStats, updatedAtMs: now() });
+      transaction.set(gameRef, { ...data.game, status: "prepared", timerStartedAtMs: null, finishedAtMs: null, updatedAtMs: now() });
+      transaction.update(babaRef, { currentGameId: stored.id, status: "playing", pendingTieBreak: null, queue: data.queue, updatedAtMs: now() });
+    });
+  }), [owner, saving, activeBaba, currentGame, games]);
 
   const finishBaba = useCallback(() => saving(async () => {
-    const uid = owner(); if (!activeBaba) throw new Error("Nenhum baba em andamento."); const timestamp = now(); const champions = championIds(teams);
-    const batch = writeBatch(db); batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { status: "finished", championTeamIds: champions, currentGameId: null, finishedAtMs: timestamp, updatedAtMs: timestamp }); batch.set(doc(db, "baba_accounts", uid, "meta", "live"), { activeBabaId: null, status: "finished", updatedAtMs: timestamp }, { merge: true }); await batch.commit();
-  }), [owner, saving, activeBaba, teams]);
+    const uid = owner(); if (!activeBaba) throw new Error("Nenhum baba em andamento.");
+    if (currentGame && currentGame.status !== "finished") throw new Error("Finalize a partida em andamento antes de encerrar o baba.");
+    if (activeBaba.pendingTieBreak) throw new Error("Resolva o desempate pendente antes de finalizar.");
+    if (activeBaba.matchMode === "manual" && teams.some((team) => !manualResults.some((result) => result.teamId === team.id))) {
+      throw new Error("Informe os totais de todos os times antes de finalizar.");
+    }
+
+    const timestamp = now(); const champions = championIds(teams); const nameMap = new Map(players.map((player) => [player.id, player.name])); const typeMap = new Map(players.map((player) => [player.id, player.type]));
+    const currentRows = (activeBaba.matchMode === "manual"
+      ? buildManualRanking(manualResults, teams, nameMap, typeMap)
+      : buildRanking(games, teams, nameMap, typeMap))
+      .filter((row) => {
+        const status = players.find((player) => player.id === row.playerId)?.status;
+        return status !== "convidado" && status !== "desativado";
+      })
+      .map((row) => ({
+        ...row,
+        babas: 1,
+        titles: teams.some((team) => champions.includes(team.id) && team.playerIds.includes(row.playerId)) ? 1 : 0,
+      }));
+    const period = activeBaba.dateKey.slice(0, 7);
+
+    await runTransaction(db, async (transaction) => {
+      const eventRefs = currentRows.map((row) => doc(db, "baba_accounts", uid, "babas", activeBaba.id, "player_stats", row.playerId));
+      const generalRefs = currentRows.map((row) => doc(db, "baba_accounts", uid, "player_stats", row.playerId));
+      const monthRefs = currentRows.map((row) => doc(db, "baba_accounts", uid, "months", period, "rankings", row.playerId));
+      const [eventSnapshots, generalSnapshots, monthSnapshots] = await Promise.all([
+        Promise.all(eventRefs.map((ref) => transaction.get(ref))),
+        Promise.all(generalRefs.map((ref) => transaction.get(ref))),
+        Promise.all(monthRefs.map((ref) => transaction.get(ref))),
+      ]);
+      const numericFields = ["games", "wins", "draws", "losses", "goals", "babas", "titles", "mvps", "yellowCards", "redCards", "goalsAgainst", "cleanGames"] as const;
+      currentRows.forEach((row, index) => {
+        const previous = eventSnapshots[index].data() || {};
+        const contribution = { ...row, updatedAtMs: timestamp, sourceBabaId: activeBaba.id, schemaVersion: 3 };
+        const mergeAggregate = (aggregate: DocumentData | undefined) => {
+          const next: Record<string, unknown> = { playerId: row.playerId, name: row.name, playerType: row.playerType || "linha", updatedAtMs: timestamp, schemaVersion: 3 };
+          numericFields.forEach((field) => { next[field] = Number(aggregate?.[field] || 0) + Number(row[field] || 0) - Number(previous[field] || 0); });
+          return next;
+        };
+        transaction.set(eventRefs[index], contribution);
+        transaction.set(generalRefs[index], mergeAggregate(generalSnapshots[index].data()), { merge: true });
+        transaction.set(monthRefs[index], { ...mergeAggregate(monthSnapshots[index].data()), monthKey: period }, { merge: true });
+      });
+      transaction.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { status: "finished", championTeamIds: champions, currentGameId: null, finishedAtMs: timestamp, updatedAtMs: timestamp });
+      transaction.set(doc(db, "baba_accounts", uid, "meta", "live"), { activeBabaId: null, status: "finished", updatedAtMs: timestamp }, { merge: true });
+    });
+  }), [owner, saving, activeBaba, currentGame, teams, manualResults, players, games]);
 
   const resetActiveBaba = useCallback(() => saving(async () => {
-    const uid = owner(); if (!activeBaba) return; const timestamp = now(); const batch = writeBatch(db); batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { status: "finished", deleted: true, finishedAtMs: timestamp, updatedAtMs: timestamp }); batch.set(doc(db, "baba_accounts", uid, "meta", "live"), { activeBabaId: null, status: "none", updatedAtMs: timestamp }, { merge: true }); await batch.commit();
+    const uid = owner(); if (!activeBaba) return; const timestamp = now(); const batch = writeBatch(db); batch.update(doc(db, "baba_accounts", uid, "babas", activeBaba.id), { status: "finished", deleted: true, deletedAtMs: timestamp, finishedAtMs: timestamp, updatedAtMs: timestamp }); batch.set(doc(db, "baba_accounts", uid, "meta", "live"), { activeBabaId: null, status: "none", updatedAtMs: timestamp }, { merge: true }); await batch.commit();
   }), [owner, saving, activeBaba]);
 
   const generateViewerCode = useCallback(() => saving(async () => {
-    const uid = owner(); const bytes = new TextEncoder().encode(`${uid}:0`); const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)); const code = String(new DataView(digest.buffer).getUint32(0, false) % 10_000).padStart(4, "0"); const hashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code)); const hash = [...new Uint8Array(hashBytes)].map((item) => item.toString(16).padStart(2, "0")).join(""); const timestamp = now(); const configRef = doc(db, "baba_access_config", uid); const previous = await getDoc(configRef); const previousHash = previous.data()?.currentCodeHash; const batch = writeBatch(db); if (previousHash && previousHash !== hash) batch.set(doc(db, "baba_access_codes", previousHash), { active: false, revokedAtMs: timestamp, updatedAtMs: timestamp }, { merge: true }); batch.set(configRef, { currentCodeHash: hash, active: true, expiresAtMs: 253402300799000, updatedAtMs: timestamp, updatedBy: uid, schemaVersion: 1 }, { merge: true }); batch.set(doc(db, "baba_access_codes", hash), { accountId: uid, active: true, expiresAtMs: 253402300799000, createdAtMs: timestamp, updatedAtMs: timestamp, schemaVersion: 1 }, { merge: true }); await batch.commit(); return code;
-  }), [owner, saving]);
+    owner();
+    const token = await auth.organizerToken();
+    const response = await fetch("/api/access/code", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    const data = await response.json().catch(() => ({})) as { code?: string; error?: string };
+    if (!response.ok || !data.code) throw new Error(data.error || "Não foi possível gerar o código.");
+    return data.code;
+  }), [owner, saving, auth]);
 
-  const value = useMemo<BabaValue>(() => ({ loading, syncStatus, players, teams, games, babas, activeBaba, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, draw, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, finishBaba, generateViewerCode, resetActiveBaba }), [loading, syncStatus, players, teams, games, babas, activeBaba, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, draw, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, finishBaba, generateViewerCode, resetActiveBaba]);
+  const getViewerCode = useCallback(async () => {
+    owner();
+    const token = await auth.organizerToken();
+    const response = await fetch("/api/access/code", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const data = await response.json().catch(() => ({})) as { code?: string | null; error?: string };
+    if (!response.ok) throw new Error(data.error || "Não foi possível consultar o código.");
+    return data.code || null;
+  }, [owner, auth]);
+
+  const revokeViewerCode = useCallback(() => saving(async () => {
+    owner();
+    const token = await auth.organizerToken();
+    const response = await fetch("/api/access/code", { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    const data = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) throw new Error(data.error || "Não foi possível revogar o código.");
+  }), [owner, saving, auth]);
+
+  const value = useMemo<BabaValue>(() => ({ loading, syncStatus, players, teams, games, babas, activeBaba, payments, manualResults, generalRanking, monthlyRanking, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMatchMode, draw, drawLateArrivals, createEmptyTeams, movePlayer, saveManualResult, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, resolveTieBreak, undoLastGame, finishBaba, generateViewerCode, getViewerCode, revokeViewerCode, resetActiveBaba }), [loading, syncStatus, players, teams, games, babas, activeBaba, payments, manualResults, generalRanking, monthlyRanking, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMatchMode, draw, drawLateArrivals, createEmptyTeams, movePlayer, saveManualResult, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, resolveTieBreak, undoLastGame, finishBaba, generateViewerCode, getViewerCode, revokeViewerCode, resetActiveBaba]);
   return <BabaContext.Provider value={value}>{children}</BabaContext.Provider>;
 }
 
