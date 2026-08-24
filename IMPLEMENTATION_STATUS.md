@@ -20,6 +20,7 @@ Atualizado em 24/08/2026.
 - Firebase Admin isolado do bundle do navegador;
 - regras Firestore com isolamento entre contas, viewer somente leitura e coleções privadas;
 - regras Storage com isolamento por conta, escrita apenas do organizador e validação básica de imagem.
+- APIs com Firebase Admin também validam expiração e `accessVersion` do visualizador antes de ler dados da conta.
 
 ### 3. Fluxos verticais
 
@@ -29,6 +30,8 @@ Atualizado em 24/08/2026.
 - modo online com cronômetro, gol, autor, sem artilheiro, desfazer e rodízio completo;
 - modo manual com PDF e totais por time/jogador;
 - tabela, ranking mensal/geral/dia/goleiro/histórico, critérios de ordenação e estrelas;
+- ranking mensal, geral e histórico reconstruído dos babas finalizados, com a mesma fonte usada pelo PDF;
+- card acessível de cada jogador no ranking, com dados do baba atual, histórico, estrelas e pagamento quando autorizado;
 - painel do organizador por estado, código viewer, finalização e reset lógico;
 - criação/troca segura da senha da comissão após autenticação Google recente, vinculada ao mesmo UID;
 - PDFs A4 de ranking, pagamentos e ficha manual;
@@ -42,6 +45,7 @@ Atualizado em 24/08/2026.
 - o modo fica bloqueado após a criação de times/jogos;
 - tabela ao vivo é apenas prévia; pontos são persistidos ao finalizar;
 - uma partida finalizada aplica estatísticas uma vez e mantém snapshot para desfazer;
+- os agregados de ranking exibidos não são tratados como fonte definitiva: são somadas as contribuições preservadas em cada baba finalizado;
 - o backup exclui `security`, `rate_limits` e `audit`, portanto não transporta código ou segredos.
 
 ## Migrações
@@ -55,7 +59,7 @@ Atualizado em 24/08/2026.
 
 - `npm run lint`: passou sem erros;
 - `npm run typecheck`: passou;
-- `npm test`: 29 testes unitários passaram;
+- `npm test`: 30 testes unitários passaram;
 - `npm run test:rules`: 8 testes de Firestore/Storage no emulador passaram;
 - `npm audit --omit=dev`: 0 altas/críticas e 6 moderadas transitivas, vindas do módulo opcional `@google-cloud/storage` de `firebase-admin`; o aplicativo não importa esse módulo, mas o lockfile ainda é sinalizado;
 - `npm run build`: passou com 20 páginas/rotas geradas e sem erro de TypeScript.
@@ -77,5 +81,6 @@ Estas partes do prompt amplo ainda não estão completas e não devem ser tratad
 - compartilhamento por Web Share e fila própria de mutações offline além da persistência do Firestore;
 - testes E2E completos, QA visual real em Android/iPhone/desktop e auditoria de acessibilidade com leitor de tela;
 - integração MCP administrativa e observabilidade externa configurada.
+- publicação das regras no Firebase de produção: o CLI local ainda não tem uma conta autenticada; execute `npx firebase login` e `npm run firebase:deploy` antes de validar o site publicado.
 
 O navegador integrado não estava conectado nesta sessão; por isso a validação visual em dispositivos não foi simulada nem declarada como concluída. Antes de publicar, execute os fluxos do checklist do README em homologação com o projeto Firebase real.

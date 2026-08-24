@@ -6,6 +6,7 @@ import { buildManualRanking, buildRanking, sortGoalkeepers, sortRanking, type Ra
 import { sortBestRanking } from "@/lib/domain/stars";
 import type { Game, ManualTeamResult, Player, RankingRow, Team } from "@/lib/domain/types";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadHistoricalRankings } from "@/lib/firebase/history-ranking";
 import { createRankingPdf } from "@/lib/pdf/reports";
 
 export const runtime = "nodejs";
@@ -16,16 +17,6 @@ const schema = z.object({
   historyMonth: z.string().regex(/^\d{4}-\d{2}$/),
 });
 const labels = { month: "Ranking do mês", general: "Ranking geral", day: "Ranking do dia", goalkeeper: "Ranking de goleiros", history: "Histórico mensal" } as const;
-
-function rankingRow(id: string, data: DocumentData): RankingRow {
-  const games = Number(data.games || 0); const wins = Number(data.wins || 0); const draws = Number(data.draws || 0);
-  return {
-    playerId: id, name: String(data.name || "Jogador"), playerType: data.playerType === "goleiro" ? "goleiro" : "linha",
-    games, wins, draws, losses: Number(data.losses || 0), goals: Number(data.goals || 0), points: wins * 3 + draws,
-    efficiency: games ? Math.round(((wins * 3 + draws) / (games * 3)) * 1_000) / 10 : 0,
-    babas: Number(data.babas || 0), titles: Number(data.titles || 0), mvps: Number(data.mvps || 0), yellowCards: Number(data.yellowCards || 0), redCards: Number(data.redCards || 0), goalsAgainst: Number(data.goalsAgainst || 0), cleanGames: Number(data.cleanGames || 0),
-  };
-}
 
 function player(id: string, data: DocumentData): Player {
   const status = ["regular", "novato", "convidado", "desativado"].includes(String(data.status)) ? data.status : "regular";
@@ -64,15 +55,16 @@ export async function POST(request: Request) {
     const raw = await request.text(); if (Buffer.byteLength(raw) > 8_192) return NextResponse.json({ error: "Solicitação muito grande." }, { status: 413 });
     const parsed = schema.safeParse((() => { try { return JSON.parse(raw); } catch { return null; } })());
     if (!parsed.success) return NextResponse.json({ error: "Seleção de ranking inválida." }, { status: 400 });
-    const account = getAdminDb().collection("baba_accounts").doc(identity.accountId);
-    const [finished, playersSnapshot] = await Promise.all([account.collection("babas").where("status", "==", "finished").get(), account.collection("players").get()]);
-    const completedBabas = finished.docs.filter((item) => !item.data().deletedAtMs).length;
+    let completedBabas = 0;
     let rows: RankingRow[];
-    if (parsed.data.scope === "day") rows = await dayRanking(identity.accountId);
-    else if (parsed.data.scope === "general" || parsed.data.scope === "goalkeeper") rows = (await account.collection("player_stats").get()).docs.map((item) => rankingRow(item.id, item.data()));
-    else rows = (await account.collection("months").doc(parsed.data.historyMonth).collection("rankings").get()).docs.map((item) => rankingRow(item.id, item.data()));
-    const excluded = new Set(playersSnapshot.docs.filter((item) => ["convidado", "desativado"].includes(String(item.data().status))).map((item) => item.id));
-    rows = rows.filter((item) => parsed.data.scope === "day" || !excluded.has(item.playerId));
+    if (parsed.data.scope === "day") {
+      rows = await dayRanking(identity.accountId);
+      const finished = await getAdminDb().collection("baba_accounts").doc(identity.accountId).collection("babas").where("status", "==", "finished").get();
+      completedBabas = finished.docs.filter((item) => !item.data().deletedAtMs && !item.data().deleted).length;
+    } else {
+      const historical = await loadHistoricalRankings(identity.accountId, parsed.data.scope === "month" || parsed.data.scope === "history" ? parsed.data.historyMonth : undefined);
+      rows = historical.rows; completedBabas = historical.completedBabas;
+    }
     if (parsed.data.scope === "goalkeeper") rows = sortGoalkeepers(rows);
     else if (parsed.data.criterion === "best") rows = sortBestRanking(rows, completedBabas);
     else rows = sortRanking(rows, parsed.data.criterion as RankingCriterion);

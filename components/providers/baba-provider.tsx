@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   collection, doc, onSnapshot, runTransaction, setDoc, updateDoc, writeBatch,
-  type DocumentData, type Unsubscribe,
+  type DocumentData, type FirestoreError, type Unsubscribe,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase/client";
 import { useAuth } from "./auth-provider";
@@ -12,13 +12,13 @@ import { drawTeams } from "@/lib/domain/draw";
 import { normalizeBabaStatus } from "@/lib/domain/legacy";
 import { createMonthlyPayment, monthKey, monthlyPriceCents } from "@/lib/domain/payments";
 import { getTeamTheme } from "@/lib/domain/team-theme";
-import type { Baba, Game, ManualTeamResult, MatchMode, MonthlyPayment, Player, RankingRow, Team } from "@/lib/domain/types";
+import type { Baba, Game, ManualTeamResult, MatchMode, MonthlyPayment, Player, Team } from "@/lib/domain/types";
 
 export type SyncStatus = "connecting" | "saving" | "online" | "offline" | "pending";
 
 interface BabaValue {
-  loading: boolean; syncStatus: SyncStatus; players: Player[]; teams: Team[]; games: Game[]; babas: Baba[]; activeBaba: Baba | null;
-  payments: MonthlyPayment[]; manualResults: ManualTeamResult[]; generalRanking: RankingRow[]; monthlyRanking: RankingRow[];
+  loading: boolean; syncStatus: SyncStatus; syncError: string; retryConnection(): void; players: Player[]; teams: Team[]; games: Game[]; babas: Baba[]; activeBaba: Baba | null;
+  payments: MonthlyPayment[]; manualResults: ManualTeamResult[];
   addPlayer(name: string, type: Player["type"]): Promise<void>;
   updatePlayer(id: string, patch: Partial<Player>): Promise<void>;
   togglePresence(id: string): Promise<void>; togglePayment(id: string): Promise<void>;
@@ -109,39 +109,21 @@ function mapManualResult(id: string, data: DocumentData): ManualTeamResult {
   };
 }
 
-function mapRanking(id: string, data: DocumentData): RankingRow {
-  const games = Number(data.games || 0);
-  const wins = Number(data.wins || 0);
-  const draws = Number(data.draws || 0);
-  return {
-    playerId: id,
-    name: String(data.name || "Jogador"),
-    playerType: data.playerType === "goleiro" ? "goleiro" : "linha",
-    games,
-    wins,
-    draws,
-    losses: Number(data.losses || 0),
-    goals: Number(data.goals || 0),
-    points: wins * 3 + draws,
-    efficiency: games ? Math.round((((wins * 3 + draws) / (games * 3)) * 100) * 10) / 10 : 0,
-    babas: Number(data.babas || 0),
-    titles: Number(data.titles || 0),
-    mvps: Number(data.mvps || 0),
-    yellowCards: Number(data.yellowCards || 0),
-    redCards: Number(data.redCards || 0),
-    goalsAgainst: Number(data.goalsAgainst || 0),
-    cleanGames: Number(data.cleanGames || 0),
-  };
-}
-
 export function BabaProvider({ children }: { children: React.ReactNode }) {
   const auth = useAuth();
   const { accountId, role } = auth;
   const [players, setPlayers] = useState<Player[]>([]); const [teams, setTeams] = useState<Team[]>([]); const [games, setGames] = useState<Game[]>([]); const [babas, setBabas] = useState<Baba[]>([]);
   const [payments, setPayments] = useState<MonthlyPayment[]>([]); const [manualResults, setManualResults] = useState<ManualTeamResult[]>([]);
-  const [generalRanking, setGeneralRanking] = useState<RankingRow[]>([]); const [monthlyRanking, setMonthlyRanking] = useState<RankingRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null); const [loading, setLoading] = useState(true); const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
+  const [syncError, setSyncError] = useState(""); const [listenerVersion, setListenerVersion] = useState(0);
   const activeBaba = useMemo(() => babas.find((item) => item.id === activeId) || babas.find((item) => item.status !== "finished") || null, [babas, activeId]);
+  const listenerError = useCallback((cause: FirestoreError) => {
+    console.error("[realtime] Listener do Firestore negado", cause);
+    setSyncStatus(navigator.onLine ? "connecting" : "offline");
+    setSyncError(cause.code === "permission-denied" ? "Sem permissão para sincronizar. Publique as regras do Firebase e entre novamente." : "A sincronização falhou. Tente conectar novamente.");
+    setLoading(false);
+  }, []);
+  const retryConnection = useCallback(() => { setSyncError(""); setListenerVersion((value) => value + 1); }, []);
 
   useEffect(() => {
     const online = () => setSyncStatus("online"); const offline = () => setSyncStatus("offline");
@@ -153,45 +135,39 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Reset tenant-scoped state before attaching listeners for the next account.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPlayers([]); setTeams([]); setGames([]); setBabas([]); setPayments([]); setManualResults([]); setGeneralRanking([]); setMonthlyRanking([]); setActiveId(null);
+    setPlayers([]); setTeams([]); setGames([]); setBabas([]); setPayments([]); setManualResults([]); setActiveId(null); setSyncError("");
     if (!accountId) { setLoading(false); return; }
     setLoading(true); setSyncStatus(navigator.onLine ? "connecting" : "offline");
     const unsubs: Unsubscribe[] = [];
     unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "players"), { includeMetadataChanges: true }, (snapshot) => {
       setPlayers(snapshot.docs.map((item) => mapPlayer(item.id, item.data())).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name, "pt-BR")));
       setSyncStatus(snapshot.metadata.hasPendingWrites ? "pending" : navigator.onLine ? "online" : "offline"); setLoading(false);
-    }));
+    }, listenerError));
     unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "babas"), (snapshot) => {
       const items = snapshot.docs.map((item) => mapBaba(item.id, item.data())).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
       setBabas(items); setActiveId((current) => current || items.find((item) => item.status !== "finished")?.id || null);
-    }));
+    }, listenerError));
     unsubs.push(onSnapshot(doc(db, "baba_accounts", accountId, "meta", "live"), (snapshot) => {
       if (snapshot.exists()) setActiveId(snapshot.data().activeBabaId || null);
-    }));
-    unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "player_stats"), (snapshot) => {
-      setGeneralRanking(snapshot.docs.map((item) => mapRanking(item.id, item.data())));
-    }));
-    unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "months", monthKey(), "rankings"), (snapshot) => {
-      setMonthlyRanking(snapshot.docs.map((item) => mapRanking(item.id, item.data())));
-    }));
+    }, listenerError));
     if (role === "organizer") {
       unsubs.push(onSnapshot(collection(db, "baba_accounts", accountId, "payments", monthKey(), "players"), (snapshot) => {
         setPayments(snapshot.docs.map((item) => mapPayment(item.id, item.data())));
-      }));
+      }, listenerError));
     }
     return () => unsubs.forEach((unsubscribe) => unsubscribe());
-  }, [accountId, role]);
+  }, [accountId, role, listenerVersion, listenerError]);
 
   useEffect(() => {
     // Avoid rendering the previous baba while the new realtime listeners connect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTeams([]); setGames([]); setManualResults([]);
     if (!accountId || !activeBaba?.id) return;
-    const unsubTeams = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "teams"), (snapshot) => setTeams(snapshot.docs.map((item) => mapTeam(item.id, item.data())).filter((item) => item.active).sort((a, b) => a.order - b.order)));
-    const unsubGames = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "games"), (snapshot) => setGames(snapshot.docs.map((item) => mapGame(item.id, item.data())).sort((a, b) => a.sequence - b.sequence)));
-    const unsubManual = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "manual_results"), (snapshot) => setManualResults(snapshot.docs.map((item) => mapManualResult(item.id, item.data()))));
+    const unsubTeams = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "teams"), (snapshot) => setTeams(snapshot.docs.map((item) => mapTeam(item.id, item.data())).filter((item) => item.active).sort((a, b) => a.order - b.order)), listenerError);
+    const unsubGames = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "games"), (snapshot) => setGames(snapshot.docs.map((item) => mapGame(item.id, item.data())).sort((a, b) => a.sequence - b.sequence)), listenerError);
+    const unsubManual = onSnapshot(collection(db, "baba_accounts", accountId, "babas", activeBaba.id, "manual_results"), (snapshot) => setManualResults(snapshot.docs.map((item) => mapManualResult(item.id, item.data()))), listenerError);
     return () => { unsubTeams(); unsubGames(); unsubManual(); };
-  }, [accountId, activeBaba?.id]);
+  }, [accountId, activeBaba?.id, listenerVersion, listenerError]);
 
   const owner = useCallback(() => { if (!accountId || role !== "organizer") throw new Error("Apenas o organizador pode alterar dados."); return accountId; }, [accountId, role]);
   const saving = useCallback(async <T,>(operation: () => Promise<T>) => { setSyncStatus("saving"); try { return await operation(); } finally { setSyncStatus(navigator.onLine ? "online" : "pending"); } }, []);
@@ -491,7 +467,7 @@ export function BabaProvider({ children }: { children: React.ReactNode }) {
     if (!response.ok) throw new Error(data.error || "Não foi possível revogar o código.");
   }), [owner, saving, auth]);
 
-  const value = useMemo<BabaValue>(() => ({ loading, syncStatus, players, teams, games, babas, activeBaba, payments, manualResults, generalRanking, monthlyRanking, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMatchMode, draw, drawLateArrivals, createEmptyTeams, movePlayer, saveManualResult, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, resolveTieBreak, undoLastGame, finishBaba, generateViewerCode, getViewerCode, revokeViewerCode, resetActiveBaba }), [loading, syncStatus, players, teams, games, babas, activeBaba, payments, manualResults, generalRanking, monthlyRanking, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMatchMode, draw, drawLateArrivals, createEmptyTeams, movePlayer, saveManualResult, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, resolveTieBreak, undoLastGame, finishBaba, generateViewerCode, getViewerCode, revokeViewerCode, resetActiveBaba]);
+  const value = useMemo<BabaValue>(() => ({ loading, syncStatus, syncError, retryConnection, players, teams, games, babas, activeBaba, payments, manualResults, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMatchMode, draw, drawLateArrivals, createEmptyTeams, movePlayer, saveManualResult, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, resolveTieBreak, undoLastGame, finishBaba, generateViewerCode, getViewerCode, revokeViewerCode, resetActiveBaba }), [loading, syncStatus, syncError, retryConnection, players, teams, games, babas, activeBaba, payments, manualResults, addPlayer, updatePlayer, togglePresence, togglePayment, createBaba, setMatchMode, draw, drawLateArrivals, createEmptyTeams, movePlayer, saveManualResult, prepareGame, startOrPauseGame, addGoal, undoGoal, finishGame, resolveTieBreak, undoLastGame, finishBaba, generateViewerCode, getViewerCode, revokeViewerCode, resetActiveBaba]);
   return <BabaContext.Provider value={value}>{children}</BabaContext.Provider>;
 }
 

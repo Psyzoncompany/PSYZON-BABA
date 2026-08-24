@@ -3,6 +3,7 @@ import { progressiveDelayMs } from "@/lib/auth/rate-limit";
 import {
   buildManualRanking,
   buildRanking,
+  aggregateRankingRows,
   nextRotation,
   previewTable,
   resolveManualDraw,
@@ -111,6 +112,16 @@ describe("ranking e correções", () => {
     ];
     expect(sortRanking(rows, "worst")[0].playerId).toBe("B");
     expect(sortGoalkeepers(rows)[0].playerId).toBe("G2");
+  });
+});
+
+describe("ranking derivado do histórico", () => {
+  it("soma contribuições de babas finalizados e recalcula pontos e aproveitamento", () => {
+    const first = ranking("p1", { games: 2, wins: 1, draws: 1, losses: 0, goals: 2, babas: 1, titles: 1 });
+    const second = ranking("p1", { games: 1, wins: 0, draws: 0, losses: 1, goals: 1, babas: 1, titles: 0 });
+    const [total] = aggregateRankingRows([[first], [second]]);
+    expect(total).toMatchObject({ games: 3, wins: 1, draws: 1, losses: 1, goals: 3, points: 4, babas: 2, titles: 1 });
+    expect(total.efficiency).toBe(44.4);
   });
 });
 

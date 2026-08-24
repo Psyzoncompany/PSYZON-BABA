@@ -94,8 +94,11 @@ O código de jogador não é salvo em texto puro. A API mantém apenas um índic
 Antes do deploy, publique regras e índices com uma conta que tenha permissão no projeto:
 
 ```powershell
+npx firebase login
 npm run firebase:deploy
 ```
+
+O projeto padrão já está fixado em `sitey-caixa-16e06` no `.firebaserc`. Se o navegador mostrar `permission-denied` em um listener, confirme primeiro que essas regras foram publicadas nesse projeto e depois saia e entre novamente no aplicativo; não torne as coleções públicas para contornar o erro.
 
 Como o Storage consulta `meta/security` para revogar viewer imediatamente, a primeira publicação pode pedir a ativação da permissão de regras entre Storage e Firestore.
 

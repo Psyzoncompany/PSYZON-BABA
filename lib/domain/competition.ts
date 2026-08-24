@@ -185,6 +185,31 @@ export function sortGoalkeepers(rows: readonly RankingRow[]): RankingRow[] {
     || a.name.localeCompare(b.name, "pt-BR"));
 }
 
+export function aggregateRankingRows(groups: readonly (readonly RankingRow[])[]): RankingRow[] {
+  const totals = new Map<string, RankingRow>();
+  for (const rows of groups) {
+    for (const row of rows) {
+      const current = totals.get(row.playerId) || emptyRanking(row.playerId, row.name, row.playerType);
+      current.name = row.name || current.name;
+      current.playerType = row.playerType || current.playerType;
+      current.games += row.games;
+      current.wins += row.wins;
+      current.draws += row.draws;
+      current.losses += row.losses;
+      current.goals += row.goals;
+      current.babas = (current.babas || 0) + (row.babas || 0);
+      current.titles = (current.titles || 0) + (row.titles || 0);
+      current.mvps = (current.mvps || 0) + (row.mvps || 0);
+      current.yellowCards = (current.yellowCards || 0) + (row.yellowCards || 0);
+      current.redCards = (current.redCards || 0) + (row.redCards || 0);
+      current.goalsAgainst = (current.goalsAgainst || 0) + (row.goalsAgainst || 0);
+      current.cleanGames = (current.cleanGames || 0) + (row.cleanGames || 0);
+      totals.set(row.playerId, current);
+    }
+  }
+  return finishRanking(totals);
+}
+
 export function teamFromManualResult(team: Team, result: ManualTeamResult): Team {
   const goalsFor = Object.values(result.goalsByPlayer).reduce((sum, goals) => sum + Math.max(0, Math.trunc(goals)), 0);
   return {
