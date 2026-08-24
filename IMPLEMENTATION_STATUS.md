@@ -18,6 +18,7 @@ Atualizado em 24/08/2026.
 - HMAC para busca, AES-256-GCM para consulta pelo organizador, rate limit persistido e atraso progressivo;
 - Custom Token Firebase de viewer, sessão HttpOnly/Secure/SameSite=Lax, rotação e revogação por versão;
 - Firebase Admin isolado do bundle do navegador;
+- Firebase Admin fixado em `13.10.0`, última versão 13.x compatível com o carregamento CommonJS da função Vercel/Next.js 16; a série 14.x usada anteriormente quebrava em produção ao carregar `jwks-rsa`/`jose`;
 - regras Firestore com isolamento entre contas, viewer somente leitura e coleções privadas;
 - regras Storage com isolamento por conta, escrita apenas do organizador e validação básica de imagem.
 - APIs com Firebase Admin também validam expiração e `accessVersion` do visualizador antes de ler dados da conta.
@@ -61,7 +62,7 @@ Atualizado em 24/08/2026.
 - `npm run typecheck`: passou;
 - `npm test`: 30 testes unitários passaram;
 - `npm run test:rules`: 8 testes de Firestore/Storage no emulador passaram;
-- `npm audit --omit=dev`: 0 altas/críticas e 6 moderadas transitivas, vindas do módulo opcional `@google-cloud/storage` de `firebase-admin`; o aplicativo não importa esse módulo, mas o lockfile ainda é sinalizado;
+- `npm audit --omit=dev`: 0 altas/críticas e 8 moderadas transitivas, vindas principalmente dos módulos opcionais `@google-cloud/firestore`/`storage` do `firebase-admin`; a atualização para 14.x permanece bloqueada pelo erro de execução `jwks-rsa`/`jose` observado na Vercel;
 - `npm run build`: passou com 20 páginas/rotas geradas e sem erro de TypeScript.
 - smoke test HTTP: 9 rotas principais/manifest responderam `200` no servidor de produção local.
 
